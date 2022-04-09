@@ -35,7 +35,8 @@ class DatasetConstructor:
     def __init__(self,
                  preprocessor: preprocessing.SpectrogramPreprocessor,
                  source='train',
-                 target='train'):
+                 target='train',
+                 token=None):
         """Construct a spectrogram dataset by taking a subset of an audio dataset and processing it.
 
         source: a string, usually a local file or a url
@@ -63,6 +64,7 @@ class DatasetConstructor:
         self.ds = None
         self.sample_rate = None
         self.samples_per_clip = None
+        self.token = token
 
     def initialize_dataset(self):
         self.ds = hub.load(self.source)
@@ -121,14 +123,14 @@ class DatasetConstructor:
             print("Write the metadata...")
         audio = self._clean_data(self.ds.audios[0], dtype=np.float32)
         f, t, _ = self.preprocessor.get_spectrograms(audio)
-        dmeta = hub.empty(f"{self.target}-metadata", overwrite=True)
+        dmeta = hub.empty(f"{self.target}-metadata", overwrite=True, token=self.token)
         with dmeta:
             dmeta.create_tensor('f', htype='generic')
             dmeta.create_tensor('t', htype='generic')
             dmeta.append({'f': f, 't': t})
         if verbose:
             print("Finished. Writing spectrograms...")
-        dt = hub.empty(self.target, overwrite=True)
+        dt = hub.empty(self.target, overwrite=True, token=self.token)
         with dt:
             dt.create_tensor('spectrogram', htype='generic')
             dt.create_tensor('instrument', htype='class_label')
