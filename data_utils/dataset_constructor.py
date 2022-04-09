@@ -14,10 +14,8 @@ from PIL import Image
 
 SELECTED_FAMILIES = [
     na.InstrumentFamily.KEYBOARD,
-    na.InstrumentFamily.MALLET,
     na.InstrumentFamily.ORGAN,
     na.InstrumentFamily.GUITAR,
-    na.InstrumentFamily.BASS,
     na.InstrumentFamily.REED,
     na.InstrumentFamily.BRASS
 ]
