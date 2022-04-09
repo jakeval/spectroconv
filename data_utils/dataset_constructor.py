@@ -26,10 +26,10 @@ INSTRUMENTS_PER_FAMILY = 8
 
 class DatasetConstructor:
     default_source_train = 'hub://activeloop/nsynth-train'
-    default_source_validate = 'hub://activeloop/nsynth-validate'
+    default_source_validate = 'hub://activeloop/nsynth-val'
     default_source_test = 'hub://activeloop/nsynth-test'
     default_target_train = 'hub://jakeval/nsynth-train'
-    default_target_validate = 'hub://jakeval/nsynth-validate'
+    default_target_validate = 'hub://jakeval/nsynth-val'
     default_target_test = 'hub://jakeval/nsynth-test'
 
     def __init__(self,
@@ -86,9 +86,12 @@ class DatasetConstructor:
         else:
             return val
 
-    def select_subset(self, selected_instruments):
+    def select_subset_from_target_subset(self, target_subset=default_target_test):
+        """Select a subset from the source dataset based on an existing target subset
+        """
         # select given families
-        self.df = self.df.loc[self.df.instrument.isin(selected_instruments), :]        
+        selected_instruments = np.unique(self._clean_data(hub.load(target_subset, token=self.token).instrument))
+        self.df = self.df.loc[self.df.instrument.isin(selected_instruments), :]
         return self.df
 
     def select_random_subset(self, selected_families=SELECTED_FAMILIES, instruments_per_family=INSTRUMENTS_PER_FAMILY, in_place=True):
@@ -119,7 +122,7 @@ class DatasetConstructor:
         total_time = 0
 
         if verbose:
-            print(f"{number_of_clips} clips will be written in {number_of_chunks}.")
+            print(f"{number_of_clips} clips will be written in {number_of_chunks} chunks.")
             print("Write the metadata...")
         audio = self._clean_data(self.ds.audios[0], dtype=np.float32)
         f, t, _ = self.preprocessor.get_spectrograms(audio)
