@@ -30,6 +30,9 @@ class CnnClf(nn.Module):
         x = self.fc2(x)
         return x
     
+    def predict_from_scores(self, scores):
+        return np.argmax(scores, axis=1)
+
     def predict(self, X):
         X = torch.tensor(X)
         scores = self.forward(X).detach().numpy()

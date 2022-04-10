@@ -6,6 +6,7 @@ import hub
 import numpy as np
 import pandas as pd
 
+
 class InstrumentFamily(enum.IntEnum):
     BASS = 0
     BRASS = 1
@@ -66,7 +67,7 @@ class NsynthDataset:
         self.Y = None
         self.ids = None
 
-    def initialize(self):
+    def initialize(self, code_lookup=None):
         metads = hub.load(f"{self.source}-metadata")
         self.f = self._clean_data(metads.f)
         self.t = self._clean_data(metads.t)
@@ -79,7 +80,29 @@ class NsynthDataset:
             'pitch': self._clean_data(self.ds.pitch)
         })
 
-    def get_data(self, selected_families=None, instruments_per_family=None, selected_ids=None, max_pitch=79, min_pitch=43):
+        self.codes = self.df['family'].unique()
+        if code_lookup is None:
+            self.code_lookup = dict([(code, i) for i, code in enumerate(self.codes)])
+        else:
+            self.code_lookup = code_lookup
+
+    def get_dataloader(self, batch_size):
+        def transform_spectrogram(X):
+            return X.reshape((1, X.shape[0], X.shape[1]))
+        
+        def transform_family(y):
+            return np.int64(self.id_to_ordinal(y.squeeze())) #self.id_to_ordinal(y)
+
+        return self.ds.pytorch(
+            batch_size = batch_size,
+            transform = {
+                'spectrogram': transform_spectrogram,
+                'instrument_family': transform_family
+            },
+            shuffle = False
+        )
+
+    def get_data(self, selected_families=None, instruments_per_family=None, selected_ids=None, max_pitch=72, min_pitch=48):
         idxs = np.arange(self.df.shape[0])
         if selected_ids is not None:
             idxs = idxs[self.df['id'].isin(selected_ids)]
@@ -99,6 +122,7 @@ class NsynthDataset:
         print(f"Begin loading {idxs.shape[0]} spectrograms...")
         X = self._clean_data(self.ds.spectrogram[list(idxs)], dtype=np.float32)
         y = self.df.iloc[list(idxs)].family.to_numpy()
+        y = self.id_to_ordinal(y)
         ids = self.df.iloc[list(idxs)].id.to_numpy()
         return X, y, ids
 
@@ -128,6 +152,12 @@ class NsynthDataset:
         print("finished loading!")
         df['audio'] = [PlayableAudio(self.f, self.t, S[i], audio[i], sample_rate) for i in range(audio.shape[0])]
         return df
+
+    def id_to_ordinal(self, y):
+        y_encoded = y.copy()
+        for code in self.codes:
+            y_encoded[y == code] = self.code_lookup[code]
+        return y_encoded
 
     def _clean_data(self, data, dtype=np.int64):
         val = np.squeeze(data.numpy().astype(dtype))
