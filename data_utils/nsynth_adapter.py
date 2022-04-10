@@ -71,11 +71,11 @@ class NsynthDataset:
     def initialize(self, code_lookup=None):
         metads = None
         if self.token is not None:
-            metads = hub.load(f"{self.source}-metadata", token=self.token)
-            self.ds = hub.load(self.source, self.token)
+            metads = hub.load(f"{self.source}-metadata", token=self.token, read_only=True)
+            self.ds = hub.load(self.source, self.token, read_only=True)
         else:
-            metads = hub.load(f"{self.source}-metadata")
-            self.ds = hub.load(self.source)
+            metads = hub.load(f"{self.source}-metadata", read_only=True)
+            self.ds = hub.load(self.source, read_only=True)
         self.f = self._clean_data(metads.f)
         self.t = self._clean_data(metads.t)
         
