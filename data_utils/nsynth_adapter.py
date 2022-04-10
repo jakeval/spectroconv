@@ -50,7 +50,7 @@ class NsynthDataset:
     default_audio_validate = 'hub://activeloop/nsynth-val'
     default_audio_test = 'hub://activeloop/nsynth-test'
 
-    def __init__(self, source='train'):
+    def __init__(self, source='train', token=None):
         if source == 'train':
             self.source = NsynthDataset.default_source_train
         elif source == 'validate':
@@ -59,6 +59,7 @@ class NsynthDataset:
             self.source = NsynthDataset.default_source_test
         else:
             self.source = source
+        self.token = token
         self.df = None
         self.ds = None
         self.f = None
@@ -68,11 +69,16 @@ class NsynthDataset:
         self.ids = None
 
     def initialize(self, code_lookup=None):
-        metads = hub.load(f"{self.source}-metadata")
+        metads = None
+        if self.token is not None:
+            metads = hub.load(f"{self.source}-metadata", token=self.token)
+            self.ds = hub.load(self.source, self.token)
+        else:
+            metads = hub.load(f"{self.source}-metadata")
+            self.ds = hub.load(self.source)
         self.f = self._clean_data(metads.f)
         self.t = self._clean_data(metads.t)
         
-        self.ds = hub.load(self.source)
         self.df = pd.DataFrame({
             'id': self._clean_data(self.ds.id),
             'family': self._clean_data(self.ds.instrument_family),
