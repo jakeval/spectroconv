@@ -159,9 +159,9 @@ class DatasetConstructor:
                 elapsed_time = time.time() - start_time
                 total_time += elapsed_time
                 if verbose:
-                    remaining_time = (elapsed_time / (i+1)) * (number_of_chunks - (i+1))
+                    remaining_time = (total_time / (i+1)) * (number_of_chunks - (i+1))
                     print(f"Wrote data chunk {i+1}/{number_of_chunks} in {elapsed_time} seconds. ~{remaining_time/60} minutes remaining.")
-        print(f"Finished writing data in {elapsed_time/60} minutes")
+        print(f"Finished writing data in {total_time/60} minutes")
 
     def calculate_new_dataset_size(self):
         audio = self._clean_data(self.ds.audios[0], dtype=np.float32)

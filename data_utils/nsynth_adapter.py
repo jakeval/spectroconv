@@ -2,6 +2,9 @@ import enum
 from IPython import display
 from matplotlib import pyplot as plt
 from data_utils import preprocessing
+import hub
+import numpy as np
+import pandas as pd
 
 class InstrumentFamily(enum.IntEnum):
     BASS = 0
@@ -36,3 +39,99 @@ class PlayableAudio:
     def play(self):
         show_audio = display.Audio(self.audio, rate=self.sr)
         display.DisplayHandle().display(show_audio)
+
+
+class NsynthDataset:
+    default_source_train = 'hub://jakeval/nsynth-train'
+    default_source_validate = 'hub://jakeval/nsynth-val'
+    default_source_test = 'hub://jakeval/nsynth-test'
+    default_audio_train = 'hub://activeloop/nsynth-train'
+    default_audio_validate = 'hub://activeloop/nsynth-val'
+    default_audio_test = 'hub://activeloop/nsynth-test'
+
+    def __init__(self, source='train'):
+        if source == 'train':
+            self.source = NsynthDataset.default_source_train
+        elif source == 'validate':
+            self.source = NsynthDataset.default_source_validate
+        elif source == 'test':
+            self.source = NsynthDataset.default_source_test
+        else:
+            self.source = source
+        self.df = None
+        self.ds = None
+        self.f = None
+        self.t = None
+        self.X = None
+        self.Y = None
+        self.ids = None
+
+    def initialize(self):
+        metads = hub.load(f"{self.source}-metadata")
+        self.f = self._clean_data(metads.f)
+        self.t = self._clean_data(metads.t)
+        
+        self.ds = hub.load(self.source)
+        self.df = pd.DataFrame({
+            'id': self._clean_data(self.ds.id),
+            'family': self._clean_data(self.ds.instrument_family),
+            'instrument': self._clean_data(self.ds.instrument),
+            'pitch': self._clean_data(self.ds.pitch)
+        })
+
+    def get_data(self, selected_families=None, instruments_per_family=None, selected_ids=None, max_pitch=79, min_pitch=43):
+        idxs = np.arange(self.df.shape[0])
+        if selected_ids is not None:
+            idxs = idxs[self.df['id'].isin(selected_ids)]
+        elif selected_families is not None:
+            df = self.df[self.df.family.isin(selected_families)].copy()
+            df = df[(df['pitch'] >= min_pitch) & (df['pitch'] <= max_pitch)]
+            selected_instruments = {}
+            for family in selected_families:
+                instruments = df.loc[df.family == family, 'instrument'].unique()
+                if instruments_per_family is None or instruments_per_family > instruments.shape[0]:
+                    selected_instruments[family] = instruments
+                else:
+                    selected_instruments[family] = np.random.choice(instruments, instruments_per_family, replace=False)
+            df = df.groupby('family', as_index=False).apply(lambda subdf: subdf[subdf['instrument'].isin(selected_instruments[subdf.name])])
+            idxs = idxs[self.df.id.isin(df.id)]
+        idxs = idxs
+        print(f"Begin loading {idxs.shape[0]} spectrograms...")
+        X = self._clean_data(self.ds.spectrogram[list(idxs)], dtype=np.float32)
+        y = self.df.iloc[list(idxs)].family.to_numpy()
+        ids = self.df.iloc[list(idxs)].id.to_numpy()
+        return X, y, ids
+
+    def visualize_new_dataset(self, selected_ids, audio_source='train'):
+        """Return a visualizable dataframe representing the data."""
+        if audio_source == 'train':
+            audio_source = NsynthDataset.default_audio_train
+        elif audio_source == 'validate':
+            audio_source = NsynthDataset.default_audio_validate
+        elif audio_source == 'test':
+            audio_source = NsynthDataset.default_audio_test
+        else:
+            audio_source = audio_source
+        
+        df = self.df[self.df['id'].isin(selected_ids)].drop_duplicates(subset='instrument').copy()
+        spectrogram_idxs = list(np.arange(self.df.shape[0])[self.df['id'].isin(df['id'])])
+        audio_idxs = list(df['id'].to_numpy())
+        print(f"start loading {len(audio_idxs)} samples")
+        audio_ds = hub.load(audio_source)
+        sample_rate = self._clean_data(audio_ds.sample_rate[0])
+        audio = self._clean_data(audio_ds.audios[audio_idxs], dtype=np.float32)
+        print(audio.shape)
+        print("finished loading!")
+        print(f"start loading {len(spectrogram_idxs)} spectrograms")
+        S = self._clean_data(self.ds.spectrogram[spectrogram_idxs], dtype=np.float32)
+        print(S.shape)
+        print("finished loading!")
+        df['audio'] = [PlayableAudio(self.f, self.t, S[i], audio[i], sample_rate) for i in range(audio.shape[0])]
+        return df
+
+    def _clean_data(self, data, dtype=np.int64):
+        val = np.squeeze(data.numpy().astype(dtype))
+        if len(val.shape) == 0:
+            return dtype(val)
+        else:
+            return val
