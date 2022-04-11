@@ -10,7 +10,7 @@ class SpectrogramPreprocessor:
         self.window_size = window_size
         self.n_mels = n_mels
         self.sample_rate = None
-        self.scaling = 1000
+        self.scaling = scaling
 
     def set_sample_rate(self, sample_rate):
         self.sample_rate = sample_rate

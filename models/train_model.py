@@ -92,3 +92,16 @@ def get_accuracy(clf: cnn_model.CnnClf, X, y, size=None):
         return (clf.predict(X[idx]) == y[idx]).mean()
     else:
         return (clf.predict(X) == y).mean()
+
+
+def stream_accuracy(clf, dataloader):
+    accuracies = []
+    batch_sizes = []
+    for data in dataloader:
+        X, y = data
+        accuracies.append(get_accuracy(clf, X.numpy(), y.numpy()))
+        batch_sizes.append(X.shape[0])
+    accuracies = np.array(accuracies)
+    batch_sizes = np.array(batch_sizes)
+    weights = batch_sizes / batch_sizes.sum()
+    return accuracies @ weights

@@ -72,7 +72,7 @@ class NsynthDataset:
         metads = None
         if self.token is not None:
             metads = hub.load(f"{self.source}-metadata", token=self.token, read_only=True)
-            self.ds = hub.load(self.source, self.token, read_only=True)
+            self.ds = hub.load(self.source, token=self.token, read_only=True)
         else:
             metads = hub.load(f"{self.source}-metadata", read_only=True)
             self.ds = hub.load(self.source, read_only=True)
@@ -92,7 +92,7 @@ class NsynthDataset:
         else:
             self.code_lookup = code_lookup
 
-    def get_dataloader(self, batch_size):
+    def get_dataloader(self, batch_size, shuffle=True):
         def transform_spectrogram(X):
             return X.reshape((1, X.shape[0], X.shape[1]))
         
@@ -105,7 +105,7 @@ class NsynthDataset:
                 'spectrogram': transform_spectrogram,
                 'instrument_family': transform_family
             },
-            shuffle = False
+            shuffle = shuffle
         )
 
     def get_data(self, selected_families=None, instruments_per_family=None, selected_ids=None, max_pitch=72, min_pitch=48):
