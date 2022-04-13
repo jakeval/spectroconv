@@ -105,7 +105,8 @@ class NsynthDataset:
                 'spectrogram': transform_spectrogram,
                 'instrument_family': transform_family
             },
-            shuffle = shuffle
+            shuffle = shuffle,
+            use_local_cache = True
         )
 
     def get_data(self, selected_families=None, instruments_per_family=None, selected_ids=None, max_pitch=72, min_pitch=48):

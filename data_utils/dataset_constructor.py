@@ -9,6 +9,7 @@ import pandas as pd
 from data_utils import nsynth_adapter as na
 from data_utils import preprocessing
 import time
+from PIL import Image
 
 
 SELECTED_FAMILIES = [
@@ -187,6 +188,10 @@ class DatasetConstructor:
         df['audio'] = [na.PlayableAudio(f, t, S[i], audio[i], self.sample_rate) for i in range(audio.shape[0])]
         return df
 
+def write_image():
+    X = np.random.random((64, 64))
+    im = Image.fromarray(X, mode='RGB')
+    im.save('./data/test/test_im.png')
 
 if __name__ == '__main__':
     preprocessor = preprocessing.SpectrogramPreprocessor(max_freq=8000, window_size=1024, n_mels=32)
