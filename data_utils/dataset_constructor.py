@@ -92,10 +92,11 @@ class DatasetConstructor:
         self.df = self.df.loc[self.df.instrument.isin(selected_instruments), :]
         return self.df
 
-    def select_random_subset(self, selected_families=SELECTED_FAMILIES, instruments_per_family=INSTRUMENTS_PER_FAMILY, in_place=True):
-        # select given families
+    def select_random_subset(self, selected_families=SELECTED_FAMILIES, instruments_per_family=INSTRUMENTS_PER_FAMILY, max_pitch=72, min_pitch=48, in_place=True):
+        # select given families and pitches
         df = self.df.loc[self.df.family.isin(selected_families), :].copy()
-        
+        df = df[(df['pitch'] >= min_pitch) & (df['pitch'] <= max_pitch)]
+
         # select instruments per family
         selected_instruments = {}
         for family in selected_families:
