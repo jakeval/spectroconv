@@ -50,7 +50,7 @@ class NsynthDataset:
     default_audio_validate = 'hub://activeloop/nsynth-val'
     default_audio_test = 'hub://activeloop/nsynth-test'
 
-    def __init__(self, source='train', token=None):
+    def __init__(self, source='train', token_file='./.activeloop.key'):
         if source == 'train':
             self.source = NsynthDataset.default_source_train
         elif source == 'validate':
@@ -59,7 +59,6 @@ class NsynthDataset:
             self.source = NsynthDataset.default_source_test
         else:
             self.source = source
-        self.token = token
         self.df = None
         self.ds = None
         self.f = None
@@ -67,6 +66,10 @@ class NsynthDataset:
         self.X = None
         self.Y = None
         self.ids = None
+        self.token = None
+        if token_file is not None:
+            with open(token_file) as f:
+                self.token = f.read().strip()
 
     def initialize(self, code_lookup=None):
         metads = None
@@ -91,6 +94,7 @@ class NsynthDataset:
             self.code_lookup = dict([(code, i) for i, code in enumerate(self.codes)])
         else:
             self.code_lookup = code_lookup
+        return self.code_lookup
 
     def get_dataloader(self, batch_size, shuffle=True):
         def transform_spectrogram(X):
@@ -132,6 +136,9 @@ class NsynthDataset:
         y = self.id_to_ordinal(y)
         ids = self.df.iloc[list(idxs)].id.to_numpy()
         return X, y, ids
+
+    def sample_shape(self):
+        return self.ds.spectrogram[0].shape
 
     def visualize_new_dataset(self, selected_ids, audio_source='train'):
         """Return a visualizable dataframe representing the data."""

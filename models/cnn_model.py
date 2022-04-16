@@ -5,7 +5,7 @@ import numpy as np
 
 
 class CnnClf(nn.Module):
-    def __init__(self, num_classes, input_shape):
+    def __init__(self, input_shape, class_enums):
         super().__init__()
         h, w = input_shape
         
@@ -15,22 +15,22 @@ class CnnClf(nn.Module):
         self.channels = [1, 8, 16, 32, 32]
 
         for i in range(len(self.kernel_sizes)):
-          self.convs.append(nn.Conv2d(self.channels[i], self.channels[i+1], self.kernel_sizes[i], padding='same', stride=1))
-          self.convs.append(nn.BatchNorm2d(self.channels[i+1]))
-          self.convs.append(nn.ReLU())
-          #self.convs.append(nn.Dropout2d(p=0.2))
-          self.convs.append(self.pool)
-          h = h // 2
-          w = w // 2
-        print('h', h, 'w', w)
+            self.convs.append(nn.Conv2d(self.channels[i], self.channels[i+1], self.kernel_sizes[i], padding='same', stride=1))
+            self.convs.append(nn.BatchNorm2d(self.channels[i+1]))
+            self.convs.append(nn.ReLU())
+            #self.convs.append(nn.Dropout2d(p=0.2))
+            self.convs.append(self.pool)
+            h = h // 2
+            w = w // 2
+        #print('h', h, 'w', w)
         self.convs = nn.Sequential(*self.convs)
         
         #self.aap = nn.AdaptiveAvgPool2d((1,1))
         #self.fc = nn.Linear(self.channels[-1], num_classes)
         #self.fc1 = nn.Linear(h*w*32, 64)
         self.fc1 = nn.Linear(h*w*32, 64)
-        self.fc2 = nn.Linear(64, num_classes)
-        
+        self.fc2 = nn.Linear(64, len(class_enums))
+        self.class_names = class_enums
         
     def forward(self, x):
         x = self.convs(x)
@@ -47,9 +47,12 @@ class CnnClf(nn.Module):
     def predict(self, X, device = None):
         X = torch.tensor(X)
         if device:
-          X = X.to(device)
+            X = X.to(device)
         detached_forward = self.forward(X).detach()
         if device:
-          detached_forward = detached_forward.cpu()
+            detached_forward = detached_forward.cpu()
         scores = detached_forward.numpy()
         return np.argmax(scores, axis=1)
+
+    def loss(self, X, y, **kwargs):
+        return F.cross_entropy(X, y, **kwargs)
