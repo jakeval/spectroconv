@@ -4,6 +4,158 @@ import numpy as np
 from torch import optim
 from models import cnn_model
 from sklearn.metrics import f1_score
+import wandb
+from tqdm.auto import tqdm
+from data_utils import nsynth_adapter as na
+from models import cnn_model
+import json
+
+
+class WBExperiment:
+    def __init__(self, wb_defaults='./.wb.config', wb_key=None, device=None):
+        if wb_key is not None:
+            wandb.login(key=None)
+        else:
+            wandb.login()
+        if device is None:
+            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
+        if isinstance(wb_defaults, str):
+            with open(wb_defaults) as f:
+                self.wb_config = json.load(f)
+        elif isinstance(wb_defaults, dict):
+            self.wb_config = wb_defaults
+        else:
+            self.wb_config = {}
+
+    def run_train(self, wb_config, run_config):
+        """Run a training experiment with results logged to weights and biases.
+        Useful wb_config keys:
+            project: name of the project
+            entity: where to send the run. must be jakeval-colab
+            config: the config
+            save_code: whether to save the mainfile/notebook to W&B
+            group: put different runs into one group
+            job_type: (train, eval, test, etc)
+            name: the run name. can auto-generate
+            notes: like a -m in commit
+
+        run_config keys:
+            data
+                train_source
+                val_source
+            model: None
+            optimizer
+                name
+                params
+                    lr
+                    momentum
+            train
+                epochs
+                batch_size
+                batch_log_interval
+        """
+        wb_config_ = self.wb_config.copy()
+        wb_config_['job_type'] = 'train'
+        wb_config_.update(wb_config)
+        wb_config_['config'] = run_config
+        with wandb.init(**wb_config_) as run:
+            config = run.config
+            train_data, val_data = self.get_data(config.data)
+            model = self.get_model(config.model, train_data.code_lookup, train_data.sample_shape())
+            optimizer = self.get_optimizer(config.optimizer, model)
+            self.train(model, train_data, val_data, optimizer, config.train, run)
+            model_name = self.save_model(model, run)
+            return model_name
+
+    def run_evaluate(self, config):
+        with wandb.init() as run:
+            config = run.config
+            model = self.load_model(config.model, run)
+            data_loader = self.get_data(config.data, run)
+            metrics, examples = self.evaluate(model, data_loader, run)
+            self.log_results(metrics, examples)
+            return metrics, examples
+
+    def evaluate(self, model, data_loader, run: wandb.run):
+        # remember to override loss.reduction = 'none'
+        pass
+
+    def train(self, model, train_data, val_data, optimizer, config, run: wandb.run):
+        # Adapted from https://colab.research.google.com/github/wandb/examples/blob/master/colabs/wandb-artifacts/Pipeline_Versioning_with_W%26B_Artifacts.ipynb#scrollTo=j0PV7vvKETBl
+        train_loader = train_data.get_dataloader(config['batch_size'], shuffle=True)
+        val_loader = val_data.get_dataloader(config['batch_size'], shuffle=False)
+        example_count = 0
+        train_accuracy = 0
+        train_accuracy_samples = 0
+        for epoch in tqdm(range(config['epochs'])):
+            model.train()
+            for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
+                X, y = X.to(self.device), y.to(self.device)
+                optimizer.zero_grad()
+                scores = model(X)
+                ypred = torch.argmax(scores, axis=1)
+                train_accuracy += (ypred == y).sum().item()
+                loss = model.loss(scores, y)
+                loss.backward()
+                optimizer.step()
+
+                example_count += len(X)
+                train_accuracy_samples += len(X)
+
+                if batch_idx % config['batch_log_interval'] == 0:
+                    print(f'Epoch: {epoch}, Batch: {batch_idx}/{len(train_loader)} ({100. * batch_idx / len(train_loader):.0f}%)\tLoss: {loss.item():.6f}')
+                    self.log_progress("train", loss, train_accuracy / train_accuracy_samples, example_count, epoch, run)
+                    train_accuracy = 0
+                    train_accuracy_samples = 0
+
+            # evaluate the model on the validation set at each epoch
+            val_loss, val_accuracy = self.validate_model(model, val_loader)
+            self.log_progress("validation", val_loss, val_accuracy, example_count, epoch, run)
+
+    def validate_model(self, model, data_loader):
+        model.eval()
+        loss = 0
+        correct = 0
+        with torch.no_grad():
+            for X, y in data_loader:
+                X, y = X.to(self.device), y.to(self.device)
+                scores = model(X)
+                loss += model.loss(scores, y, reduction='sum')  # sum up batch loss
+                pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                correct += pred.eq(y.view_as(pred)).sum()
+
+        loss /= len(data_loader.dataset)
+        accuracy = correct / len(data_loader.dataset)
+        
+        return loss, accuracy
+
+    def log_progress(self, split, loss, accuracy, example_count, epoch, run):
+        loss = float(loss)
+        accuracy = float(accuracy)
+
+        # where the magic happens
+        run.log({"epoch": epoch, f"{split}/loss": loss, f"{split}/accuracy": accuracy}, step=example_count)
+
+    def get_data(self, config):
+        nds_train = na.NsynthDataset(source=config['train_source'])
+        code_lookup = nds_train.initialize()
+        nds_val = na.NsynthDataset(source=config['val_source'])
+        nds_val.initialize(code_lookup=code_lookup)
+        return nds_train, nds_val
+
+    def get_model(self, config, code_lookup, input_shape):
+        class_enums = [None] * len(code_lookup)
+        for code, index in code_lookup.items():
+            class_enums[index] = na.InstrumentFamily(code)
+        return cnn_model.CnnClf(input_shape, class_enums)
+
+    def get_optimizer(self, config, model):
+        return getattr(torch.optim, config['name'])(model.parameters(), **config['params'])
+
+    def save_model(self, model, run):
+        return "no name!"
 
 
 def train_model_dataloader(clf: cnn_model.CnnClf, dataloader, dataloader_val, lr=0.005, momentum=0.9, epochs=80, device = None):
