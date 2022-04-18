@@ -11,6 +11,7 @@ from models import cnn_model
 import json
 import os
 import pickle
+from matplotlib import pyplot as plt
 
 
 class WBExperiment:
@@ -72,23 +73,6 @@ class WBExperiment:
             if save_model:
                 self.save_model(model, config.model, run)
 
-    def run_evaluate(self, wb_config, run_config):
-        wb_config_ = self.wb_config.copy()
-        wb_config_['job_type'] = 'evaluate'
-        wb_config_.update(wb_config)
-        wb_config_['config'] = run_config
-        with wandb.init(**wb_config_) as run:
-            config = run.config
-            data = self.get_data(config.data)
-            model = self.load_model(config.model_name, run, data['val'].sample_shape(), model_version=config.get('model_version', 'latest'))
-            metrics, examples = self.evaluate(model, data['val'], run)
-            #self.log_results(metrics, examples)
-            return metrics, examples
-
-    def evaluate(self, model, data, run: wandb.run):
-        # remember to override loss.reduction = 'none'
-        return 1, 2
-
     def train(self, model, train_data, val_data, optimizer, config, run: wandb.run):
         # Adapted from https://colab.research.google.com/github/wandb/examples/blob/master/colabs/wandb-artifacts/Pipeline_Versioning_with_W%26B_Artifacts.ipynb#scrollTo=j0PV7vvKETBl
         train_loader = train_data.get_dataloader(config['batch_size'], shuffle=True)
@@ -118,8 +102,33 @@ class WBExperiment:
                     train_accuracy_samples = 0
 
             # evaluate the model on the validation set at each epoch
-            val_loss, val_accuracy = self.validate_model(model, val_loader)
-            self.log_progress("validation", val_loss, val_accuracy, example_count, epoch, run)
+            metrics = self.validate_model(model, val_loader)
+            self.log_progress("validation", metrics['loss'], metrics['accuracy'], example_count, epoch, run)
+
+    def run_evaluate(self, wb_config, run_config):
+        wb_config_ = self.wb_config.copy()
+        wb_config_['job_type'] = 'evaluate'
+        wb_config_.update(wb_config)
+        wb_config_['config'] = run_config
+        metrics, examples_df = None, None
+        with wandb.init(**wb_config_) as run:
+            config = run.config
+            data = self.get_data(config.data)
+            sample_shape = list(data.values())[0].sample_shape()
+            model = self.load_model(config.model_name, run, sample_shape, model_version=config.get('model_version', 'latest'))
+            metrics, examples_df = self.evaluate(model, data, config.get('eval', {}))
+            self.log_evaluation(metrics, examples_df, run)
+        return metrics, examples_df
+
+    def evaluate(self, model, data_dict, config):
+        metrics = {}
+        examples_df = {}
+        for split, data in data_dict.items():
+            data_loader = data.get_dataloader(64, shuffle=False)
+            metrics[split] = self.validate_model(model, data_loader)
+            examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
+            examples_df[split] = self.get_examples_dataframe(examples, split, data)
+        return metrics, examples_df
 
     def validate_model(self, model, data_loader):
         model.eval()
@@ -135,8 +144,10 @@ class WBExperiment:
 
         loss /= len(data_loader.dataset)
         accuracy = correct / len(data_loader.dataset)
-        
-        return loss, accuracy
+        return {
+            'loss': loss,
+            'accuracy': accuracy
+        }
 
     def log_progress(self, split, loss, accuracy, example_count, epoch, run):
         loss = float(loss)
@@ -205,6 +216,63 @@ class WBExperiment:
         wandb.save(class_names_file)
         run.log_artifact(model_artifact)
         return model_name
+
+    def get_hardest_k_examples(self, model, data, k=32):
+        model.eval()
+        loader = data.get_dataloader(64, shuffle=False, include_ids=True)
+        losses = None
+        predictions = None
+        ids = None
+        with torch.no_grad():
+            for X, y, id in loader:
+                X, y = X.to(self.device), y.to(self.device)
+                scores = model(X)
+                loss = model.loss(scores, y, reduction='none').view((-1, 1))
+                pred = scores.argmax(dim=1, keepdim=True)            
+                if losses is None:
+                    losses = loss
+                    predictions = pred
+                    ids = id
+                else:
+                    losses = torch.cat((losses, loss), 0)
+                    predictions = torch.cat((predictions, pred), 0)
+                    ids = torch.cat((ids, id), 0)
+
+        sorted_idx = torch.argsort(losses, dim=0).squeeze()
+        highest_k_losses = losses[sorted_idx[-k:]]
+        k_predictions = model.ordinal_to_class_enum(predictions[sorted_idx[-k:]])
+        k_ids = ids[sorted_idx[-k:]]
+        return {
+            'losses': highest_k_losses,
+            'predictions': k_predictions,
+            'ids': k_ids.squeeze().numpy()
+        }
+
+    def log_evaluation(self, metrics, examples_df, run):
+        run.summary.update(metrics)
+        for split, df in examples_df.items():
+            table = wandb.Table(dataframe=df)
+            run.log({
+                f'{split}/high-loss-examples': table
+            })
+
+    def get_examples_dataframe(self, examples, audio_split, data: na.NsynthDataset):
+        df = data.get_dataframe(examples['ids'], audio_split)
+        prediction_str = [f"{pred.name} ({pred.value})" for pred in examples['predictions']]
+        label = df['family'].to_numpy()
+        label_str = [f"{na.InstrumentFamily(code).name} ({na.InstrumentFamily(code).value})" for code in label]
+
+        df['family_pred'] = prediction_str
+        df['family_true'] = label_str
+        df['loss'] = examples['losses']
+        plots = [data.plot_spectrogram(s) for s in df['spectrogram']]
+        df['spectrogram'] = [wandb.Image(p, caption=cap) for p, cap in zip(plots, label_str)]
+        df['audio'] = ([wandb.Audio(a, sample_rate=sr, caption=cap)
+                        for a, sr, cap
+                        in zip(df['audio'], df['sample_rate'], label_str)])
+
+        ordered_cols = ['spectrogram', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
+        return df[ordered_cols]
 
 
 def train_model_dataloader(clf: cnn_model.CnnClf, dataloader, dataloader_val, lr=0.005, momentum=0.9, epochs=80, device = None):
