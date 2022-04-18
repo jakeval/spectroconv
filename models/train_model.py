@@ -9,10 +9,12 @@ from tqdm.auto import tqdm
 from data_utils import nsynth_adapter as na
 from models import cnn_model
 import json
+import os
+import pickle
 
 
 class WBExperiment:
-    def __init__(self, wb_defaults='./.wb.config', wb_key=None, device=None):
+    def __init__(self, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
         if wb_key is not None:
             wandb.login(key=None)
         else:
@@ -28,8 +30,9 @@ class WBExperiment:
             self.wb_config = wb_defaults
         else:
             self.wb_config = {}
+        self.storage_dir = storage_dir
 
-    def run_train(self, wb_config, run_config):
+    def run_train(self, wb_config, run_config, save_model=True):
         """Run a training experiment with results logged to weights and biases.
         Useful wb_config keys:
             project: name of the project
@@ -43,8 +46,8 @@ class WBExperiment:
 
         run_config keys:
             data
-                train_source
-                val_source
+                train
+                val
             model: None
             optimizer
                 name
@@ -62,25 +65,29 @@ class WBExperiment:
         wb_config_['config'] = run_config
         with wandb.init(**wb_config_) as run:
             config = run.config
-            train_data, val_data = self.get_data(config.data)
-            model = self.get_model(config.model, train_data.code_lookup, train_data.sample_shape())
+            data = self.get_data(config.data)
+            model = self.get_model(config.model, na.codes_to_enums(data['train'].code_lookup), data['train'].sample_shape())
             optimizer = self.get_optimizer(config.optimizer, model)
-            self.train(model, train_data, val_data, optimizer, config.train, run)
-            model_name = self.save_model(model, run)
-            return model_name
+            self.train(model, data['train'], data['val'], optimizer, config.train, run)
+            if save_model:
+                self.save_model(model, config.model, run)
 
-    def run_evaluate(self, config):
-        with wandb.init() as run:
+    def run_evaluate(self, wb_config, run_config):
+        wb_config_ = self.wb_config.copy()
+        wb_config_['job_type'] = 'evaluate'
+        wb_config_.update(wb_config)
+        wb_config_['config'] = run_config
+        with wandb.init(**wb_config_) as run:
             config = run.config
-            model = self.load_model(config.model, run)
-            data_loader = self.get_data(config.data, run)
-            metrics, examples = self.evaluate(model, data_loader, run)
-            self.log_results(metrics, examples)
+            data = self.get_data(config.data)
+            model = self.load_model(config.model_name, run, data['val'].sample_shape(), model_version=config.get('model_version', 'latest'))
+            metrics, examples = self.evaluate(model, data['val'], run)
+            #self.log_results(metrics, examples)
             return metrics, examples
 
-    def evaluate(self, model, data_loader, run: wandb.run):
+    def evaluate(self, model, data, run: wandb.run):
         # remember to override loss.reduction = 'none'
-        pass
+        return 1, 2
 
     def train(self, model, train_data, val_data, optimizer, config, run: wandb.run):
         # Adapted from https://colab.research.google.com/github/wandb/examples/blob/master/colabs/wandb-artifacts/Pipeline_Versioning_with_W%26B_Artifacts.ipynb#scrollTo=j0PV7vvKETBl
@@ -139,23 +146,65 @@ class WBExperiment:
         run.log({"epoch": epoch, f"{split}/loss": loss, f"{split}/accuracy": accuracy}, step=example_count)
 
     def get_data(self, config):
-        nds_train = na.NsynthDataset(source=config['train_source'])
-        code_lookup = nds_train.initialize()
-        nds_val = na.NsynthDataset(source=config['val_source'])
-        nds_val.initialize(code_lookup=code_lookup)
-        return nds_train, nds_val
+        data = {}
+        code_lookup = None
+        for split in ['train', 'val', 'test']:
+            source = config.get(split, False)
+            if source:
+                nds = na.NsynthDataset(source=source)
+                if code_lookup is None:
+                    code_lookup = nds.initialize()
+                else:
+                    nds.initialize(code_lookup)
+                data[split] = nds
+        return data
 
-    def get_model(self, config, code_lookup, input_shape):
-        class_enums = [None] * len(code_lookup)
-        for code, index in code_lookup.items():
-            class_enums[index] = na.InstrumentFamily(code)
-        return cnn_model.CnnClf(input_shape, class_enums)
+    def get_model(self, config, class_enums, input_shape):
+        return cnn_model.CnnClf(input_shape, class_enums).to(self.device)
 
     def get_optimizer(self, config, model):
         return getattr(torch.optim, config['name'])(model.parameters(), **config['params'])
 
-    def save_model(self, model, run):
-        return "no name!"
+    def load_model(self, model_name, run, input_shape, model_version='latest'):
+        model_artifact = run.use_artifact(f"{model_name}:{model_version}")
+        model_config = model_artifact.metadata
+        model_dir = model_artifact.download(root=self.storage_dir)
+        model_path = os.path.join(model_dir, model_config['model_path'])
+        class_names_path = os.path.join(model_dir, model_config['class_names_path'])
+        code_lookup = None
+        with open(class_names_path, 'rb') as f:
+            code_lookup = pickle.load(f)
+        model = self.get_model(model_config, code_lookup, input_shape)
+        model.load_state_dict(torch.load(model_path))
+        model = model.to(self.device)
+        return model
+
+    def save_model(self, model, model_config, run):
+        model_name = model_config["name"]
+        model_filename = f"{model_name}.pth"
+        class_names_filename = f"{model_name}.pkl"
+        model_file = os.path.join(self.storage_dir, model_filename)
+        class_names_file = os.path.join(self.storage_dir, class_names_filename)
+        metadata = dict(model_config)
+        metadata.update({
+            'model_path': model_filename,
+            'class_names_path': class_names_filename
+        })
+        params = {
+            "name": model_name,
+            "type": 'model',
+            "metadata": metadata
+        }
+        model_artifact = wandb.Artifact(**params)
+        torch.save(model.state_dict(), model_file)
+        model_artifact.add_file(model_file)
+        wandb.save(model_file)
+        with open(class_names_file, 'wb') as f:
+            pickle.dump(model.class_names, f)
+        model_artifact.add_file(class_names_file)
+        wandb.save(class_names_file)
+        run.log_artifact(model_artifact)
+        return model_name
 
 
 def train_model_dataloader(clf: cnn_model.CnnClf, dataloader, dataloader_val, lr=0.005, momentum=0.9, epochs=80, device = None):

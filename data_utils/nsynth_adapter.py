@@ -179,3 +179,10 @@ class NsynthDataset:
             return dtype(val)
         else:
             return val
+
+
+def codes_to_enums(code_lookup):
+    class_enums = [None] * len(code_lookup)
+    for code, index in code_lookup.items():
+        class_enums[index] = InstrumentFamily(code)
+    return class_enums
