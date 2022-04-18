@@ -53,7 +53,7 @@ class NsynthDataset:
     def __init__(self, source='train', token_file='./.activeloop.key'):
         if source == 'train':
             self.source = NsynthDataset.default_source_train
-        elif source == 'validate':
+        elif source == 'val':
             self.source = NsynthDataset.default_source_validate
         elif source == 'test':
             self.source = NsynthDataset.default_source_test
@@ -79,8 +79,8 @@ class NsynthDataset:
         else:
             metads = hub.load(f"{self.source}-metadata", read_only=True)
             self.ds = hub.load(self.source, read_only=True)
-        self.f = self._clean_data(metads.f)
-        self.t = self._clean_data(metads.t)
+        self.f = self._clean_data(metads.f, dtype=np.float32)
+        self.t = self._clean_data(metads.t, dtype=np.float32)
         
         self.df = pd.DataFrame({
             'id': self._clean_data(self.ds.id),
@@ -96,22 +96,55 @@ class NsynthDataset:
             self.code_lookup = code_lookup
         return self.code_lookup
 
-    def get_dataloader(self, batch_size, shuffle=True):
+    def get_dataloader(self, batch_size, shuffle=True, include_ids=False):
         def transform_spectrogram(X):
             return X.reshape((1, X.shape[0], X.shape[1]))
         
         def transform_family(y):
             return np.int64(self.id_to_ordinal(y.squeeze())) #self.id_to_ordinal(y)
 
+        transform = {
+            'spectrogram': transform_spectrogram,
+            'instrument_family': transform_family,
+        }
+        if include_ids:
+            transform.update({'id': None})
+
         return self.ds.pytorch(
             batch_size = batch_size,
-            transform = {
-                'spectrogram': transform_spectrogram,
-                'instrument_family': transform_family
-            },
+            transform = transform,
             shuffle = shuffle,
             use_local_cache = True
         )
+
+    def get_dataframe(self, selected_ids, audio_source):
+        if audio_source == 'train':
+            audio_source = NsynthDataset.default_audio_train
+        elif audio_source == 'val':
+            audio_source = NsynthDataset.default_audio_validate
+        elif audio_source == 'test':
+            audio_source = NsynthDataset.default_audio_test
+        else:
+            audio_source = audio_source
+
+        df = self.df.copy()
+        mask = df['id'].isin(selected_ids)
+        idxs = np.arange(self.df.shape[0])[mask]
+        df = df.loc[mask,:]
+
+        print(f"Loading {len(selected_ids)} spectrograms...")
+        spectrogram = self._clean_data(self.ds.spectrogram[list(idxs)], dtype=np.float32)
+        df['spectrogram'] = list(spectrogram)
+
+        print(f"Loading {len(selected_ids)} audio clips...")
+        audio_ds = hub.load(audio_source)
+        sample_rate = self._clean_data(audio_ds.sample_rate[0])
+        df['sample_rate'] = sample_rate
+        audio = self._clean_data(audio_ds.audios[list(selected_ids)], dtype=np.float32)
+        df['audio'] = list(audio)
+        print("Linished loading")
+
+        return df
 
     def get_data(self, selected_families=None, instruments_per_family=None, selected_ids=None, max_pitch=72, min_pitch=48):
         idxs = np.arange(self.df.shape[0])
@@ -172,6 +205,14 @@ class NsynthDataset:
         for code in self.codes:
             y_encoded[y == code] = self.code_lookup[code]
         return y_encoded
+
+    def plot_spectrogram(self, s):
+        fig, ax = plt.subplots()
+        ax.pcolormesh(self.t, self.f, s, shading='gouraud')
+        ax.set_ylabel('Frequency (Hz)')
+        ax.set_xlabel('Time (sec)')
+        plt.close(fig)
+        return fig
 
     def _clean_data(self, data, dtype=np.int64):
         val = np.squeeze(data.numpy().astype(dtype))
