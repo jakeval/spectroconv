@@ -54,5 +54,12 @@ class CnnClf(nn.Module):
         scores = detached_forward.numpy()
         return np.argmax(scores, axis=1)
 
-    def loss(self, X, y, **kwargs):
-        return F.cross_entropy(X, y, **kwargs)
+    def loss(self, S, y, **kwargs):
+        return F.cross_entropy(S, y, **kwargs)
+
+    def ordinal_to_class_enum(self, y):
+        y2 = [None] * len(y)
+        y = y.squeeze()
+        for i in range(len(y)):
+            y2[i] = self.class_names[y[i]]
+        return y2
