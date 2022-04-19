@@ -97,6 +97,9 @@ class NsynthDataset:
             self.code_lookup = code_lookup
         return self.code_lookup
 
+    def set_code_lookup(self, code_lookup):
+        self.code_lookup = code_lookup
+
     def get_dataloader(self, batch_size, shuffle=True, include_ids=False):
         def transform_spectrogram(X):
             return X.reshape((1, X.shape[0], X.shape[1]))

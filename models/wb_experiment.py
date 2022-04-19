@@ -68,6 +68,12 @@ class WBExperiment:
 
         return data
 
+    def update_data(self, data, class_names):
+        code_lookup = dict([(e.value, i) for i, e in enumerate(class_names)])
+        for split in data.keys():
+            data[split].set_code_lookup(code_lookup)
+        return data
+
     def get_model(self, config, class_enums, input_shape):
         return cnn_model.CnnClf(input_shape, class_enums).to(self.device)
 
@@ -231,6 +237,7 @@ class EvalExperiment(WBExperiment):
             data = self.get_data(config.data, run)
             sample_shape = list(data.values())[0].sample_shape()
             model = self.load_model(config.model_name, run, sample_shape, model_version=config.get('model_version', 'latest'))
+            data = self.update_data(data, model.class_names)
             metrics, examples_df = self.evaluate(model, data, config.get('eval', {}))
             self.log_evaluation(metrics, examples_df, run)
         return metrics, examples_df
