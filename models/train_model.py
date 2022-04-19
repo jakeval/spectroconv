@@ -66,7 +66,7 @@ class WBExperiment:
         wb_config_['config'] = run_config
         with wandb.init(**wb_config_) as run:
             config = run.config
-            data = self.get_data(config.data)
+            data = self.get_data(config.data, run)
             model = self.get_model(config.model, na.codes_to_enums(data['train'].code_lookup), data['train'].sample_shape())
             optimizer = self.get_optimizer(config.optimizer, model)
             self.train(model, data['train'], data['val'], optimizer, config.train, run)
@@ -113,7 +113,7 @@ class WBExperiment:
         metrics, examples_df = None, None
         with wandb.init(**wb_config_) as run:
             config = run.config
-            data = self.get_data(config.data)
+            data = self.get_data(config.data, run)
             sample_shape = list(data.values())[0].sample_shape()
             model = self.load_model(config.model_name, run, sample_shape, model_version=config.get('model_version', 'latest'))
             metrics, examples_df = self.evaluate(model, data, config.get('eval', {}))
@@ -152,22 +152,24 @@ class WBExperiment:
     def log_progress(self, split, loss, accuracy, example_count, epoch, run):
         loss = float(loss)
         accuracy = float(accuracy)
-
-        # where the magic happens
         run.log({"epoch": epoch, f"{split}/loss": loss, f"{split}/accuracy": accuracy}, step=example_count)
 
-    def get_data(self, config):
+    def get_data(self, config, run):
         data = {}
         code_lookup = None
-        for split in ['train', 'val', 'test']:
-            source = config.get(split, False)
-            if source:
-                nds = na.NsynthDataset(source=source)
-                if code_lookup is None:
-                    code_lookup = nds.initialize()
-                else:
-                    nds.initialize(code_lookup)
-                data[split] = nds
+
+        for split, split_config in config.items():
+            name = split_config['name']
+            version = split_config.get('version', 'latest')
+            dataset_artifact = run.use_artifact(f'{name}:{version}')
+            source = dataset_artifact.metadata['dataset_url']
+            nds = na.NsynthDataset(source=source)
+            if code_lookup is None:
+                code_lookup = nds.initialize()
+            else:
+                nds.initialize(code_lookup)
+            data[split] = nds
+
         return data
 
     def get_model(self, config, class_enums, input_shape):
@@ -228,7 +230,8 @@ class WBExperiment:
                 X, y = X.to(self.device), y.to(self.device)
                 scores = model(X)
                 loss = model.loss(scores, y, reduction='none').view((-1, 1))
-                pred = scores.argmax(dim=1, keepdim=True)            
+                pred = scores.argmax(dim=1, keepdim=True)
+
                 if losses is None:
                     losses = loss
                     predictions = pred

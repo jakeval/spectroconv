@@ -127,22 +127,26 @@ class NsynthDataset:
         else:
             audio_source = audio_source
 
+        selected_ids = list(selected_ids)
         df = self.df.copy()
         mask = df['id'].isin(selected_ids)
         idxs = np.arange(self.df.shape[0])[mask]
         df = df.loc[mask,:]
+        df_ids = list(df['id'].to_numpy())
 
-        print(f"Loading {len(selected_ids)} spectrograms...")
+        print(f"Loading {len(df_ids)} spectrograms...")
         spectrogram = self._clean_data(self.ds.spectrogram[list(idxs)], dtype=np.float32)
         df['spectrogram'] = list(spectrogram)
 
-        print(f"Loading {len(selected_ids)} audio clips...")
+        print(f"Loading {len(df_ids)} audio clips...")
         audio_ds = hub.load(audio_source)
         sample_rate = self._clean_data(audio_ds.sample_rate[0])
         df['sample_rate'] = sample_rate
-        audio = self._clean_data(audio_ds.audios[list(selected_ids)], dtype=np.float32)
+        audio = self._clean_data(audio_ds.audios[list(df_ids)], dtype=np.float32)
         df['audio'] = list(audio)
         print("Linished loading")
+
+        df = df.set_index('id', drop=False).loc[selected_ids]
 
         return df
 
