@@ -28,6 +28,8 @@ class WBExperiment:
             self.wb_config = {}
         self.wb_config.update(wb_config)
         self.storage_dir = storage_dir
+        if not os.path.exists(storage_dir):
+            os.mkdir(storage_dir)
 
     def validate_model(self, model, data_loader):
         model.eval()

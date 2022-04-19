@@ -35,6 +35,7 @@ class PlayableAudio:
         ax.pcolormesh(t, f, s, shading='gouraud')
         ax.set_ylabel('Frequency (Hz)')
         ax.set_xlabel('Time (sec)')
+        plt.close(fig)
         return fig, ax
     
     def play(self):

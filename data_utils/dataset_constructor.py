@@ -54,6 +54,7 @@ class WBDatasetConstructor:
         else:
             self.wb_config = {}
         self.wb_config.update(wb_config)
+        print(self.wb_config)
 
     def run_construction(self, run_config):
         """
@@ -95,18 +96,32 @@ class WBDatasetConstructor:
             dc.initialize_dataset()
             dc.select_random_subset(**config['subset'])
             dc.write_subset_to_dataset()
-            self.log_dataset_artifact(config, run)
+            examples_df = dc.visualize_new_dataset(instruments_per_family=1)
+            examples_table = self.process_examples(examples_df)
+            self.log_dataset_artifact(config, examples_table, run)
 
-    def log_dataset_artifact(self, config, run):
+    def log_dataset_artifact(self, config, examples_table, run):
         name = f"{config.artifact['name']}-{config.artifact['split']}"
         metadata = dict(config)
         dataset_url = metadata['hub_urls']['target']
         metadata['dataset_url'] = dataset_url
         dataset_artifact = wandb.Artifact(name=name, type='dataset', metadata=metadata)
         hub_url = f"https://app.activeloop.ai/{dataset_url.split('//')[1]}"
-        print(hub_url)
         dataset_artifact.add_reference(hub_url)
+        dataset_artifact.add(examples_table, "examples_table")
         run.log_artifact(dataset_artifact)
+
+    def process_examples(self, df):
+        label = df['family'].to_numpy()
+        label_str = [f"{na.InstrumentFamily(code).name} ({na.InstrumentFamily(code).value})" for code in label]
+        df['family_true'] = label_str
+        plots = [a.visualize()[0] for a in df['audio']]
+        df['spectrogram'] = [wandb.Image(p) for p in plots]
+        df['audio'] = ([wandb.Audio(a.audio, sample_rate=a.sr) for a in df['audio']])
+
+        ordered_cols = ['spectrogram', 'audio', 'family_true', 'instrument', 'pitch', 'id']
+        examples_table = wandb.Table(dataframe=df[ordered_cols])
+        return examples_table
 
 
 class DatasetConstructor:
@@ -269,13 +284,12 @@ class DatasetConstructor:
         instruments_per_family: how many instruments per family to visualize.
         """
         df = self.select_random_subset(selected_families=self.df['family'].unique(), instruments_per_family=instruments_per_family, in_place=False)
-        df = df[(df['pitch'] > 40) & (df['pitch'] < 60)]
+        df = df[(df['pitch'] > 40) & (df['pitch'] < 80)]
         df = df.drop_duplicates(subset='instrument')
         idx_to_load = list(df['id'].to_numpy())
         print(f"start loading {len(idx_to_load)} samples")
         audio = self._clean_data(self.ds.audios[idx_to_load], dtype=np.float32)
         print("finished loading!")
-        print(audio.shape)
         f, t, S = self.preprocessor.get_spectrograms(audio)
         df['audio'] = [na.PlayableAudio(f, t, S[i], audio[i], self.sample_rate) for i in range(audio.shape[0])]
         return df
