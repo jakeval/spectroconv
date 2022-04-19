@@ -48,8 +48,13 @@ class WBExperiment:
         run_config keys:
             data
                 train
+                    name
+                    version?
                 val
-            model: None
+                    name
+                    version?
+            model
+                name
             optimizer
                 name
                 params
