@@ -9,8 +9,23 @@ import pandas as pd
 from data_utils import nsynth_adapter as na
 from data_utils import preprocessing
 import time
-from PIL import Image
+import wandb
+import json
 
+
+ALL_FAMILIES = [
+    na.InstrumentFamily.BASS,
+    na.InstrumentFamily.BRASS,
+    na.InstrumentFamily.FLUTE,
+    na.InstrumentFamily.GUITAR,
+    na.InstrumentFamily.KEYBOARD,
+    na.InstrumentFamily.MALLET,
+    na.InstrumentFamily.ORGAN,
+    na.InstrumentFamily.REED,
+    na.InstrumentFamily.STRING,
+    na.InstrumentFamily.SYNTH_LEAD,
+    na.InstrumentFamily.VOCAL, 
+]
 
 SELECTED_FAMILIES = [
     na.InstrumentFamily.KEYBOARD,
@@ -20,6 +35,75 @@ SELECTED_FAMILIES = [
     na.InstrumentFamily.BRASS
 ]
 INSTRUMENTS_PER_FAMILY = 8
+
+
+class WBDatasetConstructor:
+    def __init__(self, wb_defaults='./.wb.config', wb_key=None, activeloop_token='./.activeloop.key'):
+        if wb_key is not None:
+            wandb.login(key=wb_key)
+        else:
+            wandb.login()
+        with open(activeloop_token) as f:
+            self.activeloop_token = f.read().strip()
+        if isinstance(wb_defaults, str):
+            with open(wb_defaults) as f:
+                self.wb_config = json.load(f)
+        elif isinstance(wb_defaults, dict):
+            self.wb_config = wb_defaults
+        else:
+            self.wb_config = {}
+
+    def run_construction(self, wb_config, run_config):
+        """
+        wb_config:
+            project
+            entity
+            group
+            job_type
+            notes
+
+        run_config:
+            preprocessor
+                max_freq
+                max_time
+                window_size
+                n_mels
+                scaling
+            subset
+                selected_families
+                instruments_per_family
+                max_pitch
+                min_pitch
+            artifact
+                name
+                split
+            hub_urls
+                source
+                target
+        """
+        wb_config_ = self.wb_config.copy()
+        wb_config_['job_type'] = 'preprocess'
+        wb_config_.update(wb_config)
+        wb_config_['config'] = run_config
+        with wandb.init(**wb_config_) as run:
+            config = run.config
+            preprocessor = preprocessing.SpectrogramPreprocessor(**config['preprocessor'])
+            dc = DatasetConstructor(preprocessor, token=self.activeloop_token, **config['hub_urls'])
+            dc.initialize_dataset()
+            dc.select_random_subset(**config['subset'])
+            dc.write_subset_to_dataset()
+            self.log_dataset_artifact(config, run)
+
+    def log_dataset_artifact(self, config, run):
+        name = f"{config.artifact['name']}-{config.artifact['split']}"
+        metadata = dict(config)
+        dataset_url = metadata['hub_urls']['target']
+        metadata['dataset_url'] = dataset_url
+        dataset_artifact = wandb.Artifact(name=name, type='dataset', metadata=metadata)
+        hub_url = f"https://app.activeloop.ai/{dataset_url.split('//')[1]}"
+        print(hub_url)
+        dataset_artifact.add_reference(hub_url)
+        run.log_artifact(dataset_artifact)
 
 
 class DatasetConstructor:
@@ -92,9 +176,13 @@ class DatasetConstructor:
         self.df = self.df.loc[self.df.instrument.isin(selected_instruments), :]
         return self.df
 
-    def select_random_subset(self, selected_families=SELECTED_FAMILIES, instruments_per_family=INSTRUMENTS_PER_FAMILY, max_pitch=72, min_pitch=48, in_place=True):
+    def select_random_subset(self, selected_families=ALL_FAMILIES, instruments_per_family=None, max_pitch=None, min_pitch=None, in_place=True):
         # select given families and pitches
         df = self.df.loc[self.df.family.isin(selected_families), :].copy()
+        if max_pitch is None:
+            max_pitch = 108
+        if min_pitch is None:
+            min_pitch = 21
         df = df[(df['pitch'] >= min_pitch) & (df['pitch'] <= max_pitch)]
 
         # select instruments per family
@@ -189,10 +277,6 @@ class DatasetConstructor:
         df['audio'] = [na.PlayableAudio(f, t, S[i], audio[i], self.sample_rate) for i in range(audio.shape[0])]
         return df
 
-def write_image():
-    X = np.random.random((64, 64))
-    im = Image.fromarray(X, mode='RGB')
-    im.save('./data/test/test_im.png')
 
 if __name__ == '__main__':
     preprocessor = preprocessing.SpectrogramPreprocessor(max_freq=8000, window_size=1024, n_mels=32)
