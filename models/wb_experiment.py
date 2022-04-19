@@ -10,7 +10,7 @@ import pickle
 
 
 class WBExperiment:
-    def __init__(self, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
+    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
         if wb_key is not None:
             wandb.login(key=None)
         else:
@@ -19,13 +19,14 @@ class WBExperiment:
             self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
-        if isinstance(wb_defaults, str):
+        if isinstance(wb_defaults, str) and os.path.exists(wb_defaults):
             with open(wb_defaults) as f:
                 self.wb_config = json.load(f)
         elif isinstance(wb_defaults, dict):
             self.wb_config = wb_defaults
         else:
             self.wb_config = {}
+        self.wb_config.update(wb_config)
         self.storage_dir = storage_dir
 
     def validate_model(self, model, data_loader):
@@ -111,10 +112,10 @@ class WBExperiment:
 
 
 class TrainExperiment(WBExperiment):
-    def __init__(self, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
-        super().__init__(wb_defaults=wb_defaults, wb_key=wb_key, device=device, storage_dir=storage_dir)
+    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
+        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, wb_key=wb_key, device=device, storage_dir=storage_dir)
 
-    def run_train(self, wb_config, run_config, save_model=True):
+    def run_train(self, run_config, save_model=False):
         """Run a training experiment with results logged to weights and biases.
         Useful wb_config keys:
             project: name of the project
@@ -146,9 +147,10 @@ class TrainExperiment(WBExperiment):
                 batch_size
                 batch_log_interval
         """
-        wb_config_ = self.wb_config.copy()
-        wb_config_['job_type'] = 'train'
-        wb_config_.update(wb_config)
+        wb_config_ = {
+            'job_type': 'train'
+        }
+        wb_config_.update(self.wb_config)
         wb_config_['config'] = run_config
         with wandb.init(**wb_config_) as run:
             config = run.config
@@ -201,10 +203,10 @@ class TrainExperiment(WBExperiment):
 
 
 class EvalExperiment(WBExperiment):
-    def __init__(self, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
-        super().__init__(wb_defaults=wb_defaults, wb_key=wb_key, device=device, storage_dir=storage_dir)
+    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
+        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, wb_key=wb_key, device=device, storage_dir=storage_dir)
 
-    def run_evaluate(self, wb_config, run_config):
+    def run_evaluate(self, run_config):
         """
         run_config:
             data
@@ -216,9 +218,10 @@ class EvalExperiment(WBExperiment):
                 examples
                     k
         """
-        wb_config_ = self.wb_config.copy()
-        wb_config_['job_type'] = 'evaluate'
-        wb_config_.update(wb_config)
+        wb_config_ = {
+            'job_type': 'evaluate'
+        }
+        wb_config_.update(self.wb_config)
         wb_config_['config'] = run_config
         metrics, examples_df = None, None
         with wandb.init(**wb_config_) as run:

@@ -11,6 +11,7 @@ from data_utils import preprocessing
 import time
 import wandb
 import json
+import os
 
 
 ALL_FAMILIES = [
@@ -38,22 +39,23 @@ INSTRUMENTS_PER_FAMILY = 8
 
 
 class WBDatasetConstructor:
-    def __init__(self, wb_defaults='./.wb.config', wb_key=None, activeloop_token='./.activeloop.key'):
+    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, activeloop_token='./.activeloop.key'):
         if wb_key is not None:
             wandb.login(key=wb_key)
         else:
             wandb.login()
         with open(activeloop_token) as f:
             self.activeloop_token = f.read().strip()
-        if isinstance(wb_defaults, str):
+        if isinstance(wb_defaults, str) and os.path.exists(wb_defaults):
             with open(wb_defaults) as f:
                 self.wb_config = json.load(f)
         elif isinstance(wb_defaults, dict):
             self.wb_config = wb_defaults
         else:
             self.wb_config = {}
+        self.wb_config.update(wb_config)
 
-    def run_construction(self, wb_config, run_config):
+    def run_construction(self, run_config):
         """
         wb_config:
             project
@@ -81,9 +83,10 @@ class WBDatasetConstructor:
                 source
                 target
         """
-        wb_config_ = self.wb_config.copy()
-        wb_config_['job_type'] = 'preprocess'
-        wb_config_.update(wb_config)
+        wb_config_ = {
+            'job_type': 'preprocess'
+        }
+        wb_config_.update(self.wb_config)
         wb_config_['config'] = run_config
         with wandb.init(**wb_config_) as run:
             config = run.config
