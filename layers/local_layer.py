@@ -169,3 +169,114 @@ class LocallyConnectedConv(nn.Module):
                 bias = self.bias.view(C2, 1, lw)
             out_f = out_f + bias
         return out_f
+
+
+def naive_lc(x, C2, w, b, bias=True):
+    """
+    X: (N, C1, 6, 6)
+    w: (C2, L, K)
+    b: (C2, L)
+    """
+    N, C1, _, _ = x.shape
+    out = np.zeros((N, C2, 4, 4))
+    k = 0
+    l = 0
+    for n in range(N):
+        l = 0
+        for hx, hy in zip(range(1,5), range(4)): # iterate over the full input/output image
+            for wx, wy in zip(range(1,5), range(4)):
+                for c2 in range(C2):
+                    k = 0
+                    for c1 in range(C1):
+                        for hk in [-1, 0, 1]: # iterate within the kernel
+                            for wk in [-1, 0, 1]:
+                                out[n, c2, hy, wy] += x[n,c1,hx+hk,wx+wk] * w[c2, l, k]
+                                k += 1
+                l += 1
+
+    if bias:
+        for n in range(N):
+            l = 0
+            for hout in range(4):
+                for wout in range(4):
+                    for c2 in range(C2):
+                        out[n,c2,hout,wout] += b[c2,l]
+                    l += 1
+    return out, w, b
+
+
+def naive_hc(local_dim, x, C2, w, b, bias=True):
+    if local_dim == 0:
+        return naive_hc_freq(x, C2, w, b, bias=bias)
+    else:
+        return naive_hc_time(x, C2, w, b, bias=bias)
+
+
+def naive_hc_freq(x, C2, w, b, bias=True):
+    """
+    X: (N, C1, 6, 6)
+    w: (C2, Lh, K)
+    b: (C2, Lh)
+    """
+    N, C1, _, _ = x.shape
+    out = np.zeros((N, C2, 4, 4))
+    k = 0
+    l = 0
+    
+    for n in range(N):
+        l = 0
+        for hx, hy in zip(range(1,5), range(4)): # iterate over the full input/output image
+            for wx, wy in zip(range(1,5), range(4)):
+                for c2 in range(C2):
+                    k = 0
+                    for c1 in range(C1):
+                        for hk in [-1, 0, 1]: # iterate within the kernel
+                            for wk in [-1, 0, 1]:
+                                out[n, c2, hy, wy] += x[n,c1,hx+hk,wx+wk] * w[c2, l, k]
+                                k += 1
+            l += 1
+
+    if bias:
+        for n in range(N):
+            l = 0
+            for hout in range(4):
+                for wout in range(4):
+                    for c2 in range(C2):
+                        out[n,c2,hout,wout] += b[c2,l]
+                l += 1
+    return out, w, b
+
+
+def naive_hc_time(x, C2, w, b, bias=True):
+    """
+    X: (N, C1, 6, 6)
+    w: (C2, Lw, K)
+    b: (C2, Lw)
+    """
+    N, C1, _, _ = x.shape
+    out = np.zeros((N, C2, 4, 4))
+    k = 0
+    l = 0
+    
+    for n in range(N):
+        for hx, hy in zip(range(1,5), range(4)): # iterate over vertical blocks
+            l = 0
+            for wx, wy in zip(range(1,5), range(4)): # iterate over horizontal blocks
+                for c2 in range(C2):
+                    k = 0
+                    for c1 in range(C1):
+                        for hk in [-1, 0, 1]: # iterate within the kernel
+                            for wk in [-1, 0, 1]:
+                                out[n, c2, hy, wy] += x[n,c1,hx+hk,wx+wk] * w[c2, l, k]
+                                k += 1
+                l += 1
+
+    if bias:
+        for n in range(N):
+            for hout in range(4):
+                l = 0
+                for wout in range(4):
+                    for c2 in range(C2):
+                        out[n,c2,hout,wout] += b[c2,l]
+                    l += 1
+    return out, w, b
