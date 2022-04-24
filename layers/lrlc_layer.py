@@ -61,9 +61,11 @@ class LocallyConnectedCombiningWeights(nn.Module):
 
 
 class LocalizationCombiningWeights(nn.Module):
-    def __init__(self, rank, input_shape, output_shape, in_channels, low_dim_channels):
+    def __init__(self, rank, input_shape, output_shape, in_channels, low_dim_channels, local_dim=None, aggregation='max'):
         super(LocalizationCombiningWeights, self).__init__()
         self.size = output_shape
+        self.local_dim = local_dim
+        self.aggregation = aggregation
 
         self.dim_reduction_layer = nn.Conv2d(
             in_channels=in_channels,
@@ -127,12 +129,19 @@ class LocalizationCombiningWeights(nn.Module):
                 F.interpolate(layer(x_lowd), self.size, mode='bilinear', align_corners=True))
         x_multiscale = torch.concat(x_multiscale, dim=1)
 
+        if self.local_dim is not None:
+            d = 3 - self.local_dim # average over shared dimension
+            if self.aggregation == 'max':
+                x_multiscale = x_multiscale.max(dim=d, keepdim=True).values
+            if self.aggregation == 'mean':
+                x_multiscale = x_multiscale.mean(dim=d, keepdim=True)
+
         x_s = self.squeeze_layer(x_multiscale)
         x_s = F.relu(x_s)
         x_e = self.excite_layer(x_s)
         x_e = torch.sigmoid(x_e)
         output = self.proj_layer(x_e)
-        output = F.softmax(output, dim=-1)
+        output = F.softmax(output, dim=1)
         return output
 
 
@@ -148,27 +157,27 @@ class OuterCombiningWeights(nn.Module):
         c = 1 / 2
         L_h, L_w = L
         if self.local_dim is None or self.local_dim == 0:
-            self.wts_h = Parameter(torch.ones((L_h, R)) * c/(np.sqrt(R)), requires_grad=True)
+            self.wts_h = Parameter(torch.ones((R, L_h, 1)) * c/(np.sqrt(R)), requires_grad=True)
         else:
             self.register_parameter('wts_h', None)
         if self.local_dim is None or self.local_dim == 1:
-            self.wts_w = Parameter(torch.ones((L_w, R)) * c/(np.sqrt(R)), requires_grad=True)
+            self.wts_w = Parameter(torch.ones((R, 1, L_w)) * c/(np.sqrt(R)), requires_grad=True)
         else:
             self.register_parameter('wts_w', None)
 
     def forward(self):
         """
         outputs:
-        d=None: Lh, Lw, R
-        d=0: Lh, 1, R
-        d=1: 1, Lw, R
+        d=None: 1, R, Lh, Lw
+        d=0: 1, R, Lh, 1
+        d=1: 1, R, 1, Lw
         """
         wts_h, wts_w = 0, 0
         if self.local_dim is None or self.local_dim == 0:
-            wts_h = self.wts_h[:,None]
+            wts_h = self.wts_h
         if self.local_dim is None or self.local_dim == 1:
-            wts_w = self.wts_w[None,:]
-        return torch.softmax(wts_w + wts_h, dim=-1)
+            wts_w = self.wts_w
+        return torch.softmax(wts_w + wts_h, dim=0)[None,:]
 
 
 class LowRankLocallyConnected(nn.Module):
@@ -225,17 +234,18 @@ class LowRankLocallyConnected(nn.Module):
         """
         Used only for debugging and visualization.
 
-        comining_weights: Lh, Lw, R
+        comining_weights: N, R, Lh, Lw
         weight_bases: C2*R, C1, Kh, Kw
 
-        output: Lh, Lw, C2, C1, Kh, Kw
+        output: N, Lh, Lw, C2, C1, Kh, Kw
         """
         if tile and self.local_dim is not None:
-            combining_weights = torch.tile(combining_weights, (*self._tile(), 1))
+            combining_weights = torch.tile(combining_weights, (1, 1, *self._tile()))
+
         return torch.tensordot(
             combining_weights,
             weight_bases.view(self.rank, self.out_c, self.in_c, self.k[0], self.k[1]),
-            dims=([2], [0]))
+            dims=([1], [0]))
 
     def get_bias(self, tile=False):
         bias_h = 0
@@ -252,6 +262,7 @@ class LowRankLocallyConnected(nn.Module):
     def forward(self, x, combining_weights):
         """
         x: N, C1, Hh, Hw
+        combining_weights: N, R, Lh, Lw
 
         outputs: N, C2, Lh, Lw
         """
@@ -266,12 +277,7 @@ class LowRankLocallyConnected(nn.Module):
                 self.L[0],
                 self.L[1])
 
-        equation = ''
-        if len(combining_weights.shape) == 3:
-            equation = 'ijklm,lmj->iklm'
-        if len(combining_weights.shape) == 4:
-            equation = 'ijklm,ijlm->iklm'
-        outputs = torch.einsum(equation, convs, combining_weights)
+        outputs = torch.einsum('ijklm,ijlm->iklm', convs, combining_weights)
         if self.use_bias:
             outputs = outputs + self.get_bias()
         return outputs

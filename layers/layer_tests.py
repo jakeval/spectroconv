@@ -6,6 +6,7 @@ from layers import local_layer
 from layers import lrlc_layer
 import torch
 from torch import nn
+from torch.nn import functional as F
 from pprintpp import pprint
 import timeit
 import numpy as np
@@ -192,10 +193,9 @@ def check_lrlc():
     lrlc = lrlc_layer.LowRankLocallyConnected(R, (6,6), C1, C2, 3, s, p, bias=bias).float()
     ocw = lrlc_layer.OuterCombiningWeights(R, lrlc.L)
     with torch.no_grad():
-        print(channel_bias.shape)
         lrlc.bias_c += channel_bias
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)
+    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
 
     err = 0
     for h in range(4):
@@ -215,7 +215,7 @@ def check_lrlc():
     lrlc = lrlc_layer.LowRankLocallyConnected(R, (6,6), C1, C2, 3, s, p, bias=bias).float()
     ocw = lrlc_layer.OuterCombiningWeights(R, lrlc.L)
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)
+    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
     basis = lrlc.weight_bases.view((R, C2, C1, 3, 3))
     true_filter = basis.mean(0)
     err += rel_err(true_filter, weights[0,0])
@@ -244,13 +244,13 @@ def check_lrlc():
     print("Rank 3 uniform LC err:", rel_err(true_out, test_out))
 
     with torch.no_grad():
-        ocw.wts_h.copy_(torch.rand(Lh, R).float())
-        ocw.wts_w.copy_(torch.rand(Lw, R).float())
+        ocw.wts_h.copy_(torch.rand(R, Lh, 1).float())
+        ocw.wts_w.copy_(torch.rand(R, 1, Lw).float())
         lrlc.bias_h.copy_(torch.rand(1, Lh, 1))
         lrlc.bias_w.copy_(torch.rand(1, 1, Lw))
         lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)
+    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
     Lh, Lw, _, _, Kh, Kw = weights.shape
     lc_weights = torch.moveaxis(weights, 2, 0).view(C2, Lh*Lw, C1*Kh*Kw) # Lh, Lw, C2, C1, Kh, Kw
     lc_bias = lrlc.get_bias(tile=True).view(C2, Lh*Lw)
@@ -296,31 +296,32 @@ def check_combining_weights():
     z = lrlc(X, cw)
 
 
-def check_lrlc_hybrid():
-    print("-"*30, "Check lrlc hybrid", "-"*30)
+def check_lrlc_hybrid(local_dim):
+    dim_name = "F" if local_dim == 0 else "T"
+    print("-"*30, f"Check lrlc-{dim_name}", "-"*30)
     N = 2
     C1 = 3
     C2 = 6
     R = 3
-    local_dim = 0
+    Cd = 2
 
     X = torch.rand((N, C1, 6, 6)).float()
-
     lrlc = lrlc_layer.LowRankLocallyConnected(R, (6,6), C1, C2, local_dim=local_dim).float()
-    ocw = lrlc_layer.OuterCombiningWeights(R, lrlc.L, local_dim=local_dim).float()
     lc = local_layer.LocallyConnected((6,6), C1, C2).float()
-
     Lh, Lw = lrlc.L
+
+    print("OUTER CW")
+    ocw = lrlc_layer.OuterCombiningWeights(R, lrlc.L, local_dim=local_dim).float()
     with torch.no_grad():
         if local_dim is None or local_dim == 0:
-            ocw.wts_h.copy_(torch.rand(Lh, R).float())
+            ocw.wts_h.copy_(torch.rand(R, Lh, 1).float())
             lrlc.bias_h.copy_(torch.rand(1, Lh, 1))
         if local_dim is None or local_dim == 1:
-            ocw.wts_w.copy_(torch.rand(Lw, R).float())
+            ocw.wts_w.copy_(torch.rand(R, 1, Lw).float())
             lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
         lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)
+    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
     _, _, _, _, Kh, Kw = weights.shape
     lc_weights = torch.moveaxis(weights, 2, 0).view(C2, Lh*Lw, C1*Kh*Kw) # Lh, Lw, C2, C1, Kh, Kw
     lc_bias = lrlc.get_bias(tile=True).view(C2, Lh*Lw)
@@ -329,11 +330,41 @@ def check_lrlc_hybrid():
         lc.bias.copy_(lc_bias)
     test_out = lrlc(X, cw)
     true_out = lc(X)
-    print("Rank 3 non-uniform LC err:", rel_err(true_out, test_out))
+    print("OCW LC err:", rel_err(true_out, test_out))
     if local_dim is not None:
         shared_dim = int(not bool(local_dim))
         print(f"Shared deviation (should be zero):", weights.std(axis=shared_dim).mean().item())
         print(f"Local deviation (should be high):", weights.std(axis=local_dim).mean().item())
+
+    print("\nLOCALIZATION CW")
+    lcw = lrlc_layer.LocalizationCombiningWeights(R, (6,6), lrlc.L, C1, Cd, local_dim=local_dim).float()
+    with torch.no_grad():
+        if local_dim is None or local_dim == 0:
+            lrlc.bias_h.copy_(torch.rand(1, Lh, 1))
+        if local_dim is None or local_dim == 1:
+            lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
+        lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
+    cw = lcw(X)
+    cw_noise = torch.randn_like(cw)
+    cw = cw + cw_noise # add noise because by values are mostly uniform on initialization
+    cw = F.softmax(cw, dim=1)
+
+    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)
+    test_out = lrlc(X, cw)
+    for n in range(N):
+        w = weights[n]
+        _, _, _, _, Kh, Kw = w.shape
+        lc_weights = torch.moveaxis(w, 2, 0).view(C2, Lh*Lw, C1*Kh*Kw) # Lh, Lw, C2, C1, Kh, Kw
+        lc_bias = lrlc.get_bias(tile=True).view(C2, Lh*Lw)
+        with torch.no_grad():
+            lc.weight.copy_(lc_weights)
+            lc.bias.copy_(lc_bias)
+        true_out = lc(X)
+        print("LCW LC err:", rel_err(true_out[n], test_out[n]))
+        if local_dim is not None:
+            shared_dim = int(not bool(local_dim))
+            print(f"Shared deviation (should be zero):", w.std(axis=shared_dim).mean().item())
+            print(f"Local deviation (should be high):", w.std(axis=local_dim).mean().item())
 
 
 if __name__ == '__main__':
@@ -352,6 +383,7 @@ if __name__ == '__main__':
     img_shape = (128, 71)
     trials = 5
     #run_benchmark(N, params, img_shape, trials)
-    check_lrlc()
     check_combining_weights()
-    check_lrlc_hybrid()
+    check_lrlc()
+    check_lrlc_hybrid(0)
+    check_lrlc_hybrid(1)
