@@ -4,9 +4,16 @@ import wandb
 from tqdm.auto import tqdm
 from data_utils import nsynth_adapter as na
 from models import cnn_model
+from models import lrlc_model_debug
 import json
 import os
 import pickle
+import enum
+
+
+class ModelType(enum.IntEnum):
+    CNN = 0
+    LRLC = 1
 
 
 class WBExperiment:
@@ -75,7 +82,10 @@ class WBExperiment:
         return data
 
     def get_model(self, config, class_enums, input_shape):
-        return cnn_model.CnnClf(input_shape, class_enums).to(self.device)
+        if config['type_code'] == ModelType.CNN:
+            return cnn_model.CnnClf(input_shape, class_enums).float().to(self.device)
+        if config['type_code'] == ModelType.LRLC:
+            return lrlc_model_debug.LrlcClfDebug(config['rank'], input_shape, class_enums, local_dim=config.get('local_dim', None)).float().to(self.device)
 
     def load_model(self, model_name, run, input_shape, model_version='latest'):
         model_artifact = run.use_artifact(f"{model_name}:{model_version}")
@@ -160,6 +170,7 @@ class TrainExperiment(WBExperiment):
         }
         wb_config_.update(self.wb_config)
         wb_config_['config'] = run_config
+        model = None
         with wandb.init(**wb_config_) as run:
             config = run.config
             data = self.get_data(config.data, run)
@@ -168,6 +179,7 @@ class TrainExperiment(WBExperiment):
             self.train(model, data['train'], data['val'], optimizer, config.train, run)
             if save_model:
                 self.save_model(model, config.model, run)
+        return model
 
     def train(self, model, train_data, val_data, optimizer, config, run: wandb.run):
         # Adapted from https://colab.research.google.com/github/wandb/examples/blob/master/colabs/wandb-artifacts/Pipeline_Versioning_with_W%26B_Artifacts.ipynb#scrollTo=j0PV7vvKETBl
