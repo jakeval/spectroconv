@@ -22,11 +22,23 @@ def run_benchmark(N, params, img_shape, trials):
     X = torch.rand((N, params['C1'], H, W), dtype=torch.float32)
     torch_conv = nn.Conv2d(params['C1'], params['C2'], params['k'], stride=params['s'], padding=params['p']).float()
     custom_conv = conv_layer.CustomConv(params['C1'], params['C2'], params['k'], stride=params['s'], padding=params['p']).float()
-    custom_local = local_layer.LocallyConnected(X.shape, params['C1'], params['C2'], params['k'], stride=params['s'], padding=params['p'])
+    custom_local = local_layer.LocallyConnected(X.shape, params['C1'], params['C2'], params['k'], stride=params['s'], padding=params['p']).float()
+    lrlc = lrlc_layer.LowRankLocallyConnected(params['R'], img_shape, params['C1'], params['C2'], kernel_size=params['k'], stride=params['s'], padding=params['p']).float()
+    lrlc_f = lrlc_layer.LowRankLocallyConnected(params['R'], img_shape, params['C1'], params['C2'], kernel_size=params['k'], stride=params['s'], padding=params['p'], local_dim=0).float()
+    ocw = lrlc_layer.OuterCombiningWeights(params['R'], lrlc.L)
+    ocw_f = lrlc_layer.OuterCombiningWeights(params['R'], lrlc_f.L, local_dim=0)
+    lcw = lrlc_layer.LocalizationCombiningWeights(params['R'], img_shape, lrlc.L, params['C1'], params['Cd'])
+    lcw_f = lrlc_layer.LocalizationCombiningWeights(params['R'], img_shape, lrlc_f.L, params['C1'], params['Cd'], local_dim=0)
+
+
     timing_dict = {
         'torch_conv': torch_conv,
         'custom_conv': custom_conv,
-        'local_conv': custom_local
+        'local_conv': custom_local,
+        'lrlc_ocw': lambda x: lrlc(x, ocw()),
+        'lrlc_ocw_f': lambda x: lrlc_f(x, ocw_f()),
+        'lrlc_lcw': lambda x: lrlc(x, lcw(x)),
+        'lrlc_lcw_f': lambda x: lrlc_f(x, lcw_f(x))
     }
     for key, layer in timing_dict.items():
         timing_dict[key] = benchmark(layer, X, trials)
@@ -195,7 +207,7 @@ def check_lrlc():
     with torch.no_grad():
         lrlc.bias_c += channel_bias
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
+    weights = lrlc.get_weight(cw, lrlc.weight_bases, tile=True)[0]
 
     err = 0
     for h in range(4):
@@ -215,7 +227,7 @@ def check_lrlc():
     lrlc = lrlc_layer.LowRankLocallyConnected(R, (6,6), C1, C2, 3, s, p, bias=bias).float()
     ocw = lrlc_layer.OuterCombiningWeights(R, lrlc.L)
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
+    weights = lrlc.get_weight(cw, lrlc.weight_bases, tile=True)[0]
     basis = lrlc.weight_bases.view((R, C2, C1, 3, 3))
     true_filter = basis.mean(0)
     err += rel_err(true_filter, weights[0,0])
@@ -250,7 +262,7 @@ def check_lrlc():
         lrlc.bias_w.copy_(torch.rand(1, 1, Lw))
         lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
+    weights = lrlc.get_weight(cw, lrlc.weight_bases, tile=True)[0]
     Lh, Lw, _, _, Kh, Kw = weights.shape
     lc_weights = torch.moveaxis(weights, 2, 0).view(C2, Lh*Lw, C1*Kh*Kw) # Lh, Lw, C2, C1, Kh, Kw
     lc_bias = lrlc.get_bias(tile=True).view(C2, Lh*Lw)
@@ -321,7 +333,7 @@ def check_lrlc_hybrid(local_dim):
             lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
         lrlc.bias_c.copy_(torch.rand(C2, 1, 1))
     cw = ocw()
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)[0]
+    weights = lrlc.get_weight(cw, lrlc.weight_bases, tile=True)[0]
     _, _, _, _, Kh, Kw = weights.shape
     lc_weights = torch.moveaxis(weights, 2, 0).view(C2, Lh*Lw, C1*Kh*Kw) # Lh, Lw, C2, C1, Kh, Kw
     lc_bias = lrlc.get_bias(tile=True).view(C2, Lh*Lw)
@@ -349,7 +361,7 @@ def check_lrlc_hybrid(local_dim):
     cw = cw + cw_noise # add noise because by values are mostly uniform on initialization
     cw = F.softmax(cw, dim=1)
 
-    weights = lrlc.get_weights(cw, lrlc.weight_bases, tile=True)
+    weights = lrlc.get_weight(cw, lrlc.weight_bases, tile=True)
     test_out = lrlc(X, cw)
     for n in range(N):
         w = weights[n]
@@ -369,21 +381,23 @@ def check_lrlc_hybrid(local_dim):
 
 if __name__ == '__main__':
     #check_conv()
+    check_local()
+    check_hybrid_freq()
+    check_hybrid_time()
+    check_combining_weights()
+    check_lrlc()
+    check_lrlc_hybrid(0)
+    check_lrlc_hybrid(1)
     params = {
         'C1': 3,
         'C2': 8,
         'k': 3,
         's': 1,
-        'p': 'same'
+        'p': 'same',
+        'R': 8,
+        'Cd': 3
     }
-    check_local()
-    check_hybrid_freq()
-    check_hybrid_time()
     N = 32
-    img_shape = (128, 71)
-    trials = 5
-    #run_benchmark(N, params, img_shape, trials)
-    check_combining_weights()
-    check_lrlc()
-    check_lrlc_hybrid(0)
-    check_lrlc_hybrid(1)
+    img_shape = (32, 16)
+    trials = 10
+    run_benchmark(N, params, img_shape, trials)
