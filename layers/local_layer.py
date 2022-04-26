@@ -22,11 +22,12 @@ class LocallyConnected(nn.Module):
         else:
             self.padding = self._to_tuple(padding)
 
-        L = self._num_blocks(in_shape)
+        Lh, Lw = self._num_blocks(in_shape)
+        self.L = (Lh, Lw)
         K = self.k[0] * self.k[1] * in_channels
-        self.weight = nn.Parameter(torch.ones((out_channels, L, K), dtype=torch.float64), requires_grad=True)
+        self.weight = nn.Parameter(torch.ones((out_channels, Lh*Lw, K), dtype=torch.float64), requires_grad=True)
         if bias:
-            self.bias = Parameter(torch.empty((out_channels, L), dtype=torch.float64), requires_grad=True)
+            self.bias = Parameter(torch.empty((out_channels, Lh*Lw), dtype=torch.float64), requires_grad=True)
         else:
             self.register_parameter('bias', None)
         nn.init.kaiming_normal_(self.weight, mode='fan_out', nonlinearity='relu')
@@ -53,12 +54,12 @@ class LocallyConnected(nn.Module):
         padding = self.padding
         if padding == 'same':
             padding = self._set_padding(in_shape)
-        num_blocks = 1
+        L = [None, None]
         for d in [0,1]:
             numer = in_shape[d] + 2 * padding[d] - (self.k[d] - 1) - 1
             denom = self.stride[d]
-            num_blocks *= int(np.floor(numer/denom + 1))
-        return num_blocks
+            L[d] = int(np.floor(numer/denom + 1))
+        return tuple(L)
 
     def forward(self, x):
         k = self.k
@@ -80,6 +81,13 @@ class LocallyConnected(nn.Module):
         if self.bias is not None:
             out_f = out_f + self.bias.view(-1, out_f.shape[2], out_f.shape[3])
         return out_f
+
+    def get_weight(self):
+        """
+        C2, Lh, Lw, K
+        K = C1 * Kh * Kw
+        """
+        self.weight.view(self.out_c,self.L[0],self.L[1],-1).detach()
 
 
 class DepthwiseLocallyConnected(nn.Module):
@@ -242,6 +250,12 @@ class LocallyConnectedConv(nn.Module):
                 bias = self.bias.view(C2, 1, lw)
             out_f = out_f + bias
         return out_f
+
+    def get_weight(self):
+        """
+        returns: C2, Ld, K
+        """
+        self.weight.detach()
 
 
 def naive_lc(x, C2, w, b, bias=True):
