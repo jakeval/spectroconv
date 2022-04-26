@@ -77,13 +77,16 @@ class LocalizationCombiningWeights(nn.Module):
         input_size = min(input_shape)
         self.dilations = [1,2,4,8]
         self.multiscale_layers = []
+
+        k = 3
         for r in self.dilations:
+            #dilation_size = (k + (r-1)*(k-1))
             if r <= int((input_size - 1) / 2):
                 self.multiscale_layers.append(
                     nn.Conv2d(
                         in_channels=low_dim_channels,
                         out_channels=low_dim_channels,
-                        kernel_size=3,
+                        kernel_size=k,
                         stride=1,
                         padding='valid',
                         bias=True,
@@ -144,6 +147,9 @@ class LocalizationCombiningWeights(nn.Module):
         output = F.softmax(output, dim=1)
         return output
 
+    def _random_init(self):
+        pass
+
 
 class OuterCombiningWeights(nn.Module):
     def __init__(self, rank, output_shape, local_dim=None):
@@ -164,6 +170,14 @@ class OuterCombiningWeights(nn.Module):
             self.wts_w = Parameter(torch.ones((R, 1, L_w)) * c/(np.sqrt(R)), requires_grad=True)
         else:
             self.register_parameter('wts_w', None)
+
+    def _random_init(self):
+        L_h, L_w = self.output_shape
+        with torch.no_grad():
+            if self.local_dim is None or self.local_dim == 0:
+                self.wts_h = Parameter(torch.rand((self.rank, L_h, 1)), requires_grad=True)
+            if self.local_dim is None or self.local_dim == 1:
+                self.wts_w = Parameter(torch.rand((self.rank, 1, L_w)), requires_grad=True)
 
     def forward(self):
         """
@@ -230,7 +244,7 @@ class LowRankLocallyConnected(nn.Module):
         self.weight_bases = nn.Parameter(torch.ones((out_channels * R, in_channels, k[0], k[1]), dtype=torch.float64), requires_grad=True)
         nn.init.kaiming_normal_(self.weight_bases, mode='fan_out', nonlinearity='relu')
 
-    def get_weights(self, combining_weights, weight_bases, tile=False):
+    def get_weight(self, combining_weights, weight_bases=None, tile=False):
         """
         Used only for debugging and visualization.
 
@@ -239,13 +253,16 @@ class LowRankLocallyConnected(nn.Module):
 
         output: N, Lh, Lw, C2, C1, Kh, Kw
         """
+        if weight_bases is None:
+            weight_bases = self.weight_bases
+
         if tile and self.local_dim is not None:
             combining_weights = torch.tile(combining_weights, (1, 1, *self._tile()))
 
         return torch.tensordot(
             combining_weights,
             weight_bases.view(self.rank, self.out_c, self.in_c, self.k[0], self.k[1]),
-            dims=([1], [0]))
+            dims=([1], [0])).detach()
 
     def get_bias(self, tile=False):
         bias_h = 0
@@ -266,6 +283,13 @@ class LowRankLocallyConnected(nn.Module):
 
         outputs: N, C2, Lh, Lw
         """
+        convs = self.basis_convolve(x)
+        outputs = torch.einsum('ijklm,ijlm->iklm', convs, combining_weights)
+        if self.use_bias:
+            outputs = outputs + self.get_bias()
+        return outputs
+
+    def basis_convolve(self, x):
         convs = F.conv2d(
             x,
             weight=self.weight_bases,
@@ -276,11 +300,7 @@ class LowRankLocallyConnected(nn.Module):
                 self.out_c,
                 self.L[0],
                 self.L[1])
-
-        outputs = torch.einsum('ijklm,ijlm->iklm', convs, combining_weights)
-        if self.use_bias:
-            outputs = outputs + self.get_bias()
-        return outputs
+        return convs
 
     def _to_tuple(self, x):
         if isinstance(x, tuple):
