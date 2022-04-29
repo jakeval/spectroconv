@@ -1,6 +1,8 @@
 # Custom files
 api_key
 .activeloop.key
+.github.key
+.wandb.key
 wandb/
 .wandb_store/
 

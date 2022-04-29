@@ -80,6 +80,7 @@ class NsynthDataset:
         else:
             metads = hub.load(f"{self.source}-metadata", read_only=True)
             self.ds = hub.load(self.source, read_only=True)
+        
         self.f = self._clean_data(metads.f, dtype=np.float32)
         self.t = self._clean_data(metads.t, dtype=np.float32)
         

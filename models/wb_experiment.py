@@ -1,25 +1,33 @@
-import torch
-from models import cnn_model
-import wandb
-from tqdm.auto import tqdm
-from data_utils import nsynth_adapter as na
-from models import cnn_model
-from models import lrlc_model_debug
 import json
 import os
 import pickle
 import enum
+from collections import namedtuple
+
+from inspect import Parameter
+import torchsummary
+import torch
+from sklearn.metrics import f1_score
+import wandb
+from tqdm.auto import tqdm
+
+from data_utils import nsynth_adapter as na
+from models import cnn_model, lc_model, lrlc_model
+
 
 
 class ModelType(enum.IntEnum):
     CNN = 0
-    LRLC = 1
+    LC = 1
+    LRLC = 2
 
 
 class WBExperiment:
-    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
-        if wb_key is not None:
-            wandb.login(key=None)
+    def __init__(self, wb_config, wb_defaults='./.wb.config', login_key=False, device=None, storage_dir='./.wandb_store'):
+        if login_key:
+            with open('./.wandb.key') as f:
+                self.token = f.read().strip()
+            wandb.login(key=self.token)
         else:
             wandb.login()
         if device is None:
@@ -40,8 +48,9 @@ class WBExperiment:
 
     def validate_model(self, model, data_loader):
         model.eval()
-        loss = 0
+        loss = 0.0
         correct = 0
+        f1s = []
         with torch.no_grad():
             for X, y in data_loader:
                 X, y = X.to(self.device), y.to(self.device)
@@ -50,12 +59,37 @@ class WBExperiment:
                 pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
                 correct += pred.eq(y.view_as(pred)).sum()
 
+                if torch.cuda.is_available():
+                  pred = pred.cpu().numpy()
+                  y = y.cpu().numpy()
+                f1 = f1_score(y, pred, average = "macro")
+                f1s.append(f1)
+          
         loss /= len(data_loader.dataset)
         accuracy = correct / len(data_loader.dataset)
+        f1 = torch.mean(torch.Tensor(f1s).to(self.device)).item()
+
         return {
             'loss': loss,
-            'accuracy': accuracy
+            'accuracy': accuracy,
+            'f1': f1
         }
+
+    def log_metrics(self, model, split, data, run, parameters, epoch=None):
+      data_loader = data.get_dataloader(parameters.batch_size, shuffle=False)
+      metrics = self.validate_model(model, data_loader)
+
+      loss = metrics['loss']
+      accuracy = metrics['accuracy']
+      f1 = metrics['f1']
+      if epoch == None:
+        print(f'Split: {split}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
+      else:
+        print(f'Split: {split}, Epoch: {epoch}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
+      
+      metrics['split'] = split
+      metrics['epoch'] = epoch
+      run.log(metrics)
 
     def get_data(self, config, run):
         data = {}
@@ -81,11 +115,15 @@ class WBExperiment:
             data[split].set_code_lookup(code_lookup)
         return data
 
-    def get_model(self, config, class_enums, input_shape):
-        if config['type_code'] == ModelType.CNN:
-            return cnn_model.CnnClf(input_shape, class_enums).float().to(self.device)
-        if config['type_code'] == ModelType.LRLC:
-            return lrlc_model_debug.LrlcClfDebug(config['rank'], input_shape, class_enums, local_dim=config.get('local_dim', None)).float().to(self.device)
+    def get_model(self, model_type, input_shape, class_enums, parameters):
+        #return cnn_model.OriginalCNN(input_shape, class_enums).float().to(self.device)
+        if model_type == ModelType.CNN:
+            return cnn_model.CnnClf(input_shape, class_enums, parameters).float().to(self.device)
+        if model_type == ModelType.LC:
+            return lc_model.LcClf(input_shape, class_enums, parameters).float().to(self.device)
+        if model_type == ModelType.LRLC:
+            return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
+            
 
     def load_model(self, model_name, run, input_shape, model_version='latest'):
         model_artifact = run.use_artifact(f"{model_name}:{model_version}")
@@ -128,11 +166,74 @@ class WBExperiment:
         run.log_artifact(model_artifact)
         return model_name
 
+    def get_optimizer(self, parameters, model):
+      # return torch.optim.SGD(model.parameters(), lr=parameters.learning_rate, momentum=0.9)
+      if parameters.optimizer == 'sgd':
+        return torch.optim.SGD(model.parameters(), lr=parameters.learning_rate, momentum=parameters.momentum, weight_decay=parameters.l2_reg)
+      elif parameters.optimizer == 'adam':
+        return torch.optim.Adam(model.parameters(), lr=parameters.learning_rate, weight_decay=parameters.l2_reg)
+
+
+class SweepExperiment(WBExperiment):
+    def __init__(self, wb_config, wb_defaults='./.wb.config', login_key=False, device=None, storage_dir='./.wandb_store'):
+        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, login_key=login_key, device=device, storage_dir=storage_dir)
+
+    def run_sweep(self, iterations, save_all = False):
+      self.save_all = save_all
+      sweep_config = self.wb_config['sweep_config']
+
+      # Itialize sweep on wandb server
+      sweep_id = wandb.sweep(sweep_config, entity=sweep_config['entity'], project=sweep_config['project'])
+        
+      # start running on our side, update results to wandb along the way
+      wandb.agent(sweep_id, self.train_with_parameters, count=iterations)
+
+
+    def train_with_parameters(self):
+        # Initialize a new wandb run
+        with wandb.init() as run:
+
+            # If called by wandb.agent, as below,
+            # this config will be set by Sweep Controller
+            run_parameters = wandb.config
+            data = self.get_data(self.wb_config['data'], run)
+
+            input_shape = data['train'].sample_shape()
+            class_enums = na.codes_to_enums(data['train'].code_lookup)
+
+            model = self.get_model(self.wb_config['model']['id'], input_shape, class_enums, run_parameters)
+            
+            optimizer = self.get_optimizer(run_parameters, model)
+
+            model = self.train(model, data['train'], optimizer, run_parameters, run)
+
+            # log validation metric results to wandb
+            model.eval()
+            with torch.no_grad():
+              self.log_metrics(model, 'val', data['val'], run, run_parameters, run_parameters.epochs)
+            if self.save_all:
+                self.save_model(model, self.wb_config['model'], run)
+
+    def train(self, model, train_data, optimizer, config, run: wandb.run):
+        train_loader = train_data.get_dataloader(config.batch_size, shuffle=True)
+        for epoch in tqdm(range(config.epochs)):
+            model.train()
+            for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
+                X, y = X.to(self.device), y.to(self.device)
+                optimizer.zero_grad()
+                scores = model(X)
+                loss = model.loss(scores, y)
+                loss.backward()
+                optimizer.step()
+
+        return model
+
+
 
 class TrainExperiment(WBExperiment):
-    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
-        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, wb_key=wb_key, device=device, storage_dir=storage_dir)
-
+    def __init__(self, wb_config, wb_defaults='./.wb.config', login_key=None, device=None, storage_dir='./.wandb_store'):
+        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, login_key=login_key, device=device, storage_dir=storage_dir)
+        
     def run_train(self, run_config, save_model=False):
         """Run a training experiment with results logged to weights and biases.
         Useful wb_config keys:
@@ -174,21 +275,27 @@ class TrainExperiment(WBExperiment):
         with wandb.init(**wb_config_) as run:
             config = run.config
             data = self.get_data(config.data, run)
-            model = self.get_model(config.model, na.codes_to_enums(data['train'].code_lookup), data['train'].sample_shape())
-            optimizer = self.get_optimizer(config.optimizer, model)
-            self.train(model, data['train'], data['val'], optimizer, config.train, run)
+            run_parameters = namedtuple("run_parameters", config.parameters.keys())(*config.parameters.values())
+            
+            # need wb_config_['config']['model']['id'] otherwise wandb turns 
+            # ModelType into a string and isn't comparable to an enum
+            model = self.get_model(wb_config_['config']['model']['id'], data['train'].sample_shape(), na.codes_to_enums(data['train'].code_lookup), run_parameters)
+
+            optimizer = self.get_optimizer(run_parameters, model)
+
+            self.train(model, data['train'], data['val'], optimizer, config, run_parameters, run)
             if save_model:
                 self.save_model(model, config.model, run)
         return model
 
-    def train(self, model, train_data, val_data, optimizer, config, run: wandb.run):
+    def train(self, model, train_data, val_data, optimizer, config, run_parameters, run: wandb.run):
         # Adapted from https://colab.research.google.com/github/wandb/examples/blob/master/colabs/wandb-artifacts/Pipeline_Versioning_with_W%26B_Artifacts.ipynb#scrollTo=j0PV7vvKETBl
-        train_loader = train_data.get_dataloader(config['batch_size'], shuffle=True)
-        val_loader = val_data.get_dataloader(config['batch_size'], shuffle=False)
+        train_loader = train_data.get_dataloader(run_parameters.batch_size, shuffle=True)
+        val_loader = val_data.get_dataloader(run_parameters.batch_size, shuffle=False)
         example_count = 0
         train_accuracy = 0
         train_accuracy_samples = 0
-        for epoch in tqdm(range(config['epochs'])):
+        for epoch in tqdm(range(run_parameters.epochs)):
             model.train()
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
                 X, y = X.to(self.device), y.to(self.device)
@@ -196,6 +303,7 @@ class TrainExperiment(WBExperiment):
                 scores = model(X)
                 ypred = torch.argmax(scores, axis=1)
                 train_accuracy += (ypred == y).sum().item()
+
                 loss = model.loss(scores, y)
                 loss.backward()
                 optimizer.step()
@@ -203,28 +311,26 @@ class TrainExperiment(WBExperiment):
                 example_count += len(X)
                 train_accuracy_samples += len(X)
 
-                if batch_idx % config['batch_log_interval'] == 0:
-                    print(f'Epoch: {epoch}, Batch: {batch_idx}/{len(train_loader)} ({100. * batch_idx / len(train_loader):.0f}%)\tLoss: {loss.item():.6f}')
-                    self.log_progress("train", loss, train_accuracy / train_accuracy_samples, example_count, epoch, run)
+                if batch_idx % config['logging']['batch_log_interval'] == 0:
+                    # print batch loss and accuracy
+                    accuracy = float(train_accuracy / train_accuracy_samples)
+                    print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {accuracy:.4f}')
                     train_accuracy = 0
                     train_accuracy_samples = 0
 
-            # evaluate the model on the validation set at each epoch
-            metrics = self.validate_model(model, val_loader)
-            self.log_progress("validation", metrics['loss'], metrics['accuracy'], example_count, epoch, run)
+                    if config['logging']['eval_every_batch']:
+                      self.log_metrics(model, 'val', val_data, run, run_parameters)
+                      model.train()
 
-    def log_progress(self, split, loss, accuracy, example_count, epoch, run):
-        loss = float(loss)
-        accuracy = float(accuracy)
-        run.log({"epoch": epoch, f"{split}/loss": loss, f"{split}/accuracy": accuracy}, step=example_count)
-
-    def get_optimizer(self, config, model):
-        return getattr(torch.optim, config['name'])(model.parameters(), **config['params'])
+            if config['logging']['eval_every_epoch']:
+              # evaluate the model on the validation set at each epoch
+              self.log_metrics(model, 'val', val_data, run, run_parameters, epoch)
+            print('')
 
 
 class EvalExperiment(WBExperiment):
-    def __init__(self, wb_config, wb_defaults='./.wb.config', wb_key=None, device=None, storage_dir='./.wandb_store'):
-        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, wb_key=wb_key, device=device, storage_dir=storage_dir)
+    def __init__(self, wb_config, wb_defaults='./.wb.config', login_key=None, device=None, storage_dir='./.wandb_store'):
+        super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, login_key=login_key, device=device, storage_dir=storage_dir)
 
     def run_evaluate(self, run_config):
         """
@@ -244,15 +350,20 @@ class EvalExperiment(WBExperiment):
         wb_config_.update(self.wb_config)
         wb_config_['config'] = run_config
         metrics, examples_df = None, None
+
         with wandb.init(**wb_config_) as run:
             config = run.config
             data = self.get_data(config.data, run)
             sample_shape = list(data.values())[0].sample_shape()
             model = self.load_model(config.model_name, run, sample_shape, model_version=config.get('model_version', 'latest'))
+            
             data = self.update_data(data, model.class_names)
             metrics, examples_df = self.evaluate(model, data, config.get('eval', {}))
+
             self.log_evaluation(metrics, examples_df, run)
+
         return metrics, examples_df
+
 
     def evaluate(self, model, data_dict, config):
         metrics = {}

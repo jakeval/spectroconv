@@ -56,7 +56,7 @@ class WBDatasetConstructor:
         self.wb_config.update(wb_config)
         print(self.wb_config)
 
-    def run_construction(self, run_config):
+    def make_dataset(self, run_config, verbose = False):
         """
         wb_config:
             project
@@ -91,11 +91,18 @@ class WBDatasetConstructor:
         wb_config_['config'] = run_config
         with wandb.init(**wb_config_) as run:
             config = run.config
+            run.name = f"{config.artifact['name']}-{config.artifact['split']}"
             preprocessor = preprocessing.SpectrogramPreprocessor(**config['preprocessor'])
             dc = DatasetConstructor(preprocessor, token=self.activeloop_token, **config['hub_urls'])
             dc.initialize_dataset()
             dc.select_random_subset(**config['subset'])
-            dc.write_subset_to_dataset()
+            
+            if verbose:
+              shape, size = dc.calculate_new_dataset_size()
+              print(f"This dataset will be {size} gb and have shape {shape}.")
+              
+            dc.write_subset_to_dataset(verbose)
+
             examples_df = dc.visualize_new_dataset(instruments_per_family=1)
             examples_table = self.process_examples(examples_df)
             self.log_dataset_artifact(config, examples_table, run)
