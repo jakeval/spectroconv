@@ -191,11 +191,12 @@ class SweepExperiment(WBExperiment):
 
     def train_with_parameters(self):
         # Initialize a new wandb run
-        with wandb.init() as run:
+        with wandb.init(group=self.wb_config['group'], job_type=self.wb_config['job_type']) as run:
 
             # If called by wandb.agent, as below,
             # this config will be set by Sweep Controller
             run_parameters = wandb.config
+            run.name = self.wb_config['sweep_config']['name'] + '-' + run.id
             data = self.get_data(self.wb_config['data'], run)
 
             input_shape = data['train'].sample_shape()

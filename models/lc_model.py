@@ -12,22 +12,8 @@ class LcClf(nn.Module):
         
         self.convs = []
         self.pool = nn.MaxPool2d(2,2)
-
-        if parameters.num_conv_layers == 1:
-          self.kernel_sizes = [parameters.kernel_size_start]
-          self.channels = [1, parameters.final_filter_size]
-
-        if parameters.num_conv_layers == 2:
-          self.kernel_sizes = [parameters.kernel_size_start, parameters.kernel_size_start // 2]
-          self.channels = [1, 8, parameters.final_filter_size]
-
-        elif parameters.num_conv_layers == 3:
-          self.kernel_sizes = [parameters.kernel_size_start, parameters.kernel_size_start, parameters.kernel_size_start // 2]
-          self.channels = [1, 8, parameters.final_filter_size//2, parameters.final_filter_size]
-
-        elif parameters.num_conv_layers == 4:
-          self.kernel_sizes = [parameters.kernel_size_start, parameters.kernel_size_start, parameters.kernel_size_start//2, parameters.kernel_size_start//2]
-          self.channels = [1, 8, parameters.final_filter_size//2, parameters.final_filter_size, parameters.final_filter_size]
+        self.kernel_sizes = [parameters.kernel_size] * parameters.num_conv_layers
+        self.channels = [1] + [i * parameters.num_channels for i in range(1, parameters.num_conv_layers+1)]
 
         self.local_dim = parameters.local_dim
 
@@ -43,12 +29,14 @@ class LcClf(nn.Module):
         #print('h', h, 'w', w)
         self.convs = nn.Sequential(*self.convs)
 
-        if self.local_dim is not None:
-            self.lc_layer = local_layer.LocallyConnectedConv(self.local_dim, (h,w) , parameters.final_filter_size, parameters.final_filter_size, padding='same')
-        else:
-            self.lc_layer = local_layer.LocallyConnected((h,w) , parameters.final_filter_size, parameters.final_filter_size, padding='same')
+        final_num_channels = parameters.num_channels * parameters.num_conv_layers
         
-        self.fc1 = nn.Linear(h*w*parameters.final_filter_size, parameters.linear_layer_size)
+        if self.local_dim is not None:
+            self.lc_layer = local_layer.LocallyConnectedConv(self.local_dim, (h,w) , final_num_channels, final_num_channels, padding='same')
+        else:
+            self.lc_layer = local_layer.LocallyConnected((h,w) , final_num_channels, final_num_channels, padding='same')
+        
+        self.fc1 = nn.Linear(h*w*final_num_channels, parameters.linear_layer_size)
         self.fc2 = nn.Linear(parameters.linear_layer_size, len(class_enums))
         self.class_names = class_enums
         

@@ -12,22 +12,8 @@ class LrlcClf(nn.Module):
         
         self.convs = []
         self.pool = nn.MaxPool2d(2,2)
-
-        if parameters.num_conv_layers == 1:
-          self.kernel_sizes = [parameters.kernel_size_start]
-          self.channels = [1, parameters.final_filter_size]
-
-        if parameters.num_conv_layers == 2:
-          self.kernel_sizes = [parameters.kernel_size_start, parameters.kernel_size_start // 2]
-          self.channels = [1, 8, parameters.final_filter_size]
-
-        elif parameters.num_conv_layers == 3:
-          self.kernel_sizes = [parameters.kernel_size_start, parameters.kernel_size_start, parameters.kernel_size_start // 2]
-          self.channels = [1, 8, parameters.final_filter_size//2, parameters.final_filter_size]
-
-        elif parameters.num_conv_layers == 4:
-          self.kernel_sizes = [parameters.kernel_size_start, parameters.kernel_size_start, parameters.kernel_size_start//2, parameters.kernel_size_start//2]
-          self.channels = [1, 8, parameters.final_filter_size//2, parameters.final_filter_size, parameters.final_filter_size]
+        self.kernel_sizes = [parameters.kernel_size] * parameters.num_conv_layers
+        self.channels = [1] + [i * parameters.num_channels for i in range(1, parameters.num_conv_layers+1)]
 
         self.local_dim = parameters.local_dim
         self.rank = parameters.rank
@@ -45,6 +31,8 @@ class LrlcClf(nn.Module):
             w = w // 2
         #print('h', h, 'w', w)
         self.convs = nn.Sequential(*self.convs)
+        
+        final_num_channels = parameters.num_channels * parameters.num_conv_layers
 
         self.lrlc_layer = lrlc_layer.LowRankLocallyConnected(self.rank, (h,w), self.channels[-1], self.lrlc_channels, padding='same', local_dim=self.local_dim)
         if self.lcw:
