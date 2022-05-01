@@ -380,23 +380,26 @@ class EvalExperiment(WBExperiment):
             sample_shape = list(data.values())[0].sample_shape()
             model = self.load_model(config.model_name, run, sample_shape, model_version=config.get('model_version', 'latest'))
             data = self.update_data(data, model.class_names)
-            metrics, examples_df, model_stats = self.evaluate(model, data, config.get('eval', {}))
+            metrics, hard_df, easy_df, model_stats = self.evaluate(model, data, config.get('eval', {}))
 
-            self.log_evaluation(metrics, examples_df, model_stats, run)
+            self.log_evaluation(metrics, hard_df, easy_df, model_stats, run)
 
         return metrics, examples_df, model_stats
 
     def evaluate(self, model, data_dict, config):
         metrics = {}
-        examples_df = {}
+        hard_examples_df = {}
+        easy_examples_df = {}
         model_stats = {'weight_norm': self.get_weight_norms(model)}
         for split, data in data_dict.items():
             data_loader = data.get_dataloader(64, shuffle=False)
             metrics[split] = self.validate_model(model, data_loader)
-            examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
-            examples_df[split] = self.get_examples_dataframe(examples, split, data)
+            hard_examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
+            hard_examples_df[split] = self.get_examples_dataframe(hard_examples, split, data)
+            easy_examples = self.get_easiest_k_examples(model, data, **config.get('examples', {}))
+            easy_examples_df[split] = self.get_examples_dataframe(easy_examples, split, data)
         
-        return metrics, examples_df, model_stats
+        return metrics, hard_examples_df, easy_examples_df, model_stats
 
     def get_weight_norms(self, model):
         conv_count = 0
@@ -439,6 +442,7 @@ class EvalExperiment(WBExperiment):
                         predictions[inst] = p
 
         keys = losses.keys()
+        print("total instruments found:", len(keys))
         losses = np.array([losses[k] for k in keys])
         ids = np.array([ids[k] for k in keys])
         predictions = np.array([predictions[k] for k in keys])
@@ -452,6 +456,47 @@ class EvalExperiment(WBExperiment):
             'predictions': k_predictions,
             'ids': k_ids
         }
+
+    def get_easiest_k_examples(self, model, data, k=32):
+        model.eval()
+        loader = data.get_dataloader(64, shuffle=False, include_ids=True, include_instrument=True)
+        ids = {}
+        losses = {}
+        predictions = {}
+        with torch.no_grad():
+            for X, y, id, instrument in loader:
+                X, y = X.to(self.device), y.to(self.device)
+                scores = model(X)
+                loss = model.loss(scores, y, reduction='none').squeeze()
+                pred = scores.argmax(dim=1, keepdim=True)
+                id = id.squeeze()
+                instrument = instrument.squeeze()
+                for i in range(loss.shape[0]):
+                    inst = instrument[i].item()
+                    l = loss[i].item()
+                    p = pred[i].item()
+                    id_ = id[i].item()
+                    if losses.get(inst, np.inf) > l:
+                        losses[inst] = l
+                        ids[inst] = id_
+                        predictions[inst] = p
+
+        keys = losses.keys()
+        print("total instruments found:", len(keys))
+        losses = np.array([losses[k] for k in keys])
+        ids = np.array([ids[k] for k in keys])
+        predictions = np.array([predictions[k] for k in keys])
+
+        sorted_idx = np.argsort(losses, axis=0)
+        highest_k_losses = losses[sorted_idx[-k:]]
+        k_predictions = model.ordinal_to_class_enum(predictions[sorted_idx[-k:]])
+        k_ids = ids[sorted_idx[-k:]]
+        return {
+            'losses': highest_k_losses,
+            'predictions': k_predictions,
+            'ids': k_ids
+        }
+
 
     def get_examples_dataframe(self, examples, audio_split, data: na.NsynthDataset):
         df = data.get_dataframe(examples['ids'], audio_split)
@@ -471,19 +516,23 @@ class EvalExperiment(WBExperiment):
         ordered_cols = ['spectrogram', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
         return df[ordered_cols]
 
-    def log_evaluation(self, metrics, examples_df, model_stats, run):
+    def log_evaluation(self, metrics, hard_df, easy_df, model_stats, run):
         #run.summary.update(metrics)
         for split, split_metrics in metrics.items():
             for metric, value in split_metrics.items():
                 run.summary.update({f'{split}/{metric}': value})
-        print("logged the metrics")
-        for split, df in examples_df.items():
+
+        for split, df in hard_df.items():
             table = wandb.Table(dataframe=df)
             run.log({
                 f'{split}/high-loss-examples': table
             })
-        print("logged the examples")
+
+        for split, df in easy_df.items():
+            table = wandb.Table(dataframe=df)
+            run.log({
+                f'{split}/low-loss-examples': table
+            })
 
         norm_table = wandb.Table(data=model_stats['weight_norm'], columns=['layer', 'norm'])
         run.log({"weight_norms": wandb.plot.bar(norm_table, 'layer', 'norm', title='Norm of Model Weights')})
-        print("logged the weights")
