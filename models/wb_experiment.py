@@ -7,6 +7,7 @@ from collections import namedtuple
 #from inspect import Parameter
 #import torchsummary
 import torch
+from torch import nn
 from sklearn.metrics import f1_score
 import wandb
 from tqdm.auto import tqdm
@@ -14,6 +15,9 @@ from tqdm.auto import tqdm
 from data_utils import nsynth_adapter as na
 from models import cnn_model, lc_model, lrlc_model
 
+
+def _as_named_tuple(parameters):
+    return namedtuple("run_parameters", parameters.keys())(*parameters.values())
 
 
 class ModelType(enum.IntEnum):
@@ -57,8 +61,8 @@ class WBExperiment:
             nonlocal metrics, count
 
             if torch.cuda.is_available():
-                y_pred = y_pred.cpu().numpy()
-                y_true = y_true.cpu().numpy()
+                y_pred = y_pred.cpu()
+                y_true = y_true.cpu()
 
             accuracy = y_pred.eq(y_true.view_as(y_pred)).sum()
             f1 = f1_score(y_true, y_pred, average='macro') * y_true.shape[0]
@@ -121,7 +125,6 @@ class WBExperiment:
             else:
                 nds.initialize(code_lookup)
             data[split] = nds
-
         return data
 
     def update_data(self, data, class_names):
@@ -138,7 +141,6 @@ class WBExperiment:
             return lc_model.LcClf(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LRLC:
             return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
-            
 
     def load_model(self, model_name, run, input_shape, model_version='latest'):
         model_artifact = run.use_artifact(f"{model_name}:{model_version}")
@@ -146,21 +148,24 @@ class WBExperiment:
         model_dir = model_artifact.download(root=self.storage_dir)
         model_path = os.path.join(model_dir, model_config['model_path'])
         class_names_path = os.path.join(model_dir, model_config['class_names_path'])
-        code_lookup = None
+        class_enums = None
         with open(class_names_path, 'rb') as f:
-            code_lookup = pickle.load(f)
-        model = self.get_model(model_config, code_lookup, input_shape)
+            class_enums = pickle.load(f)
+        model_type = model_config['id']
+        run_parameters = _as_named_tuple(model_config['parameters'])
+        model = self.get_model(model_type, input_shape, class_enums, run_parameters)
         model.load_state_dict(torch.load(model_path))
         model = model.to(self.device)
         return model
 
-    def save_model(self, model, model_config, run):
+    def save_model(self, model, model_config, run_parameters_dict, run):
         model_name = model_config["name"]
         model_filename = f"{model_name}.pth"
         class_names_filename = f"{model_name}.pkl"
         model_file = os.path.join(self.storage_dir, model_filename)
         class_names_file = os.path.join(self.storage_dir, class_names_filename)
         metadata = dict(model_config)
+        metadata['parameters'] = run_parameters_dict
         metadata.update({
             'model_path': model_filename,
             'class_names_path': class_names_filename
@@ -228,7 +233,7 @@ class SweepExperiment(WBExperiment):
             with torch.no_grad():
                 self.log_metrics(model, 'val', data['val'], run, run_parameters, run_parameters.epochs)
             if self.save_all:
-                self.save_model(model, self.wb_config['model'], run)
+                self.save_model(model, self.wb_config['model'], run_parameters._asdict(), run)
 
     def train(self, model, train_data, optimizer, config, run: wandb.run):
         train_loader = train_data.get_dataloader(config.batch_size, shuffle=True)
@@ -290,7 +295,7 @@ class TrainExperiment(WBExperiment):
         with wandb.init(**wb_config_) as run:
             config = run.config
             data = self.get_data(config.data, run)
-            run_parameters = namedtuple("run_parameters", config.parameters.keys())(*config.parameters.values())
+            run_parameters = _as_named_tuple(config.parameters)
             
             # need wb_config_['config']['model']['id'] otherwise wandb turns 
             # ModelType into a string and isn't comparable to an enum
@@ -300,7 +305,7 @@ class TrainExperiment(WBExperiment):
 
             self.train(model, data['train'], data['val'], optimizer, config, run_parameters, run)
             if save_model:
-                self.save_model(model, config.model, run)
+                self.save_model(model, config.model, run_parameters._asdict(), run)
         return model
 
     def train(self, model, train_data, val_data, optimizer, config, run_parameters, run: wandb.run):
@@ -372,24 +377,41 @@ class EvalExperiment(WBExperiment):
             data = self.get_data(config.data, run)
             sample_shape = list(data.values())[0].sample_shape()
             model = self.load_model(config.model_name, run, sample_shape, model_version=config.get('model_version', 'latest'))
-            
             data = self.update_data(data, model.class_names)
-            metrics, examples_df = self.evaluate(model, data, config.get('eval', {}))
+            metrics, examples_df, model_stats = self.evaluate(model, data, config.get('eval', {}))
 
-            self.log_evaluation(metrics, examples_df, run)
+            self.log_evaluation(metrics, examples_df, model_stats, run)
 
         return metrics, examples_df
-
 
     def evaluate(self, model, data_dict, config):
         metrics = {}
         examples_df = {}
+        model_stats = {'weight_norm': self.get_weight_norms(model)}
         for split, data in data_dict.items():
             data_loader = data.get_dataloader(64, shuffle=False)
             metrics[split] = self.validate_model(model, data_loader)
             examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
             examples_df[split] = self.get_examples_dataframe(examples, split, data)
-        return metrics, examples_df
+        
+        return metrics, examples_df, model_stats
+
+    def get_weight_norms(self, model):
+        conv_count = 0
+        fc_count = 0
+        labels = []
+        norms = []
+        for layer in model.max_norm_layers:
+            if isinstance(layer, nn.Conv2d):
+                norms.append(layer.weight.norm(2).item())
+                labels.append(f"conv{conv_count}")
+                conv_count += 1
+            if isinstance(layer, nn.Linear):
+                norms.append(layer.weight.norm(2).item())
+                labels.append(f"linear{fc_count}")
+                fc_count += 1
+        return [[label, val] for (label, val) in zip(labels, norms)]
+
 
     def get_hardest_k_examples(self, model, data, k=32):
         model.eval()
@@ -441,10 +463,16 @@ class EvalExperiment(WBExperiment):
         ordered_cols = ['spectrogram', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
         return df[ordered_cols]
 
-    def log_evaluation(self, metrics, examples_df, run):
-        run.summary.update(metrics)
+    def log_evaluation(self, metrics, examples_df, model_stats, run):
+        #run.summary.update(metrics)
+        for split, split_metrics in metrics.items():
+            for metric, value in split_metrics.items():
+                run.summary.update({f'{split}/{metric}': value})
         for split, df in examples_df.items():
             table = wandb.Table(dataframe=df)
             run.log({
                 f'{split}/high-loss-examples': table
             })
+        
+        norm_table = wandb.Table(data=model_stats['weight_norm'], columns=['layer', 'norm'])
+        run.log({"weight_norms": wandb.plot.bar(norm_table, 'label', 'value', title='Norm of Model Weights')})
