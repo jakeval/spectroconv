@@ -4,8 +4,8 @@ import pickle
 import enum
 from collections import namedtuple
 
-from inspect import Parameter
-import torchsummary
+#from inspect import Parameter
+#import torchsummary
 import torch
 from sklearn.metrics import f1_score
 import wandb
@@ -46,50 +46,65 @@ class WBExperiment:
         if not os.path.exists(storage_dir):
             os.mkdir(storage_dir)
 
+    def metric_accumulator(self):
+        metrics = {
+            'accuracy': 0,
+            'f1': 0
+        }
+        count = 0
+
+        def accumulate(y_true, y_pred):
+            nonlocal metrics, count
+
+            if torch.cuda.is_available():
+                y_pred = y_pred.cpu().numpy()
+                y_true = y_true.cpu().numpy()
+
+            accuracy = y_pred.eq(y_true.view_as(y_pred)).sum()
+            f1 = f1_score(y_true, y_pred, average='macro') * y_true.shape[0]
+
+            metrics['accuracy'] += accuracy
+            metrics['f1'] += f1
+            count += y_true.shape[0]
+            return metrics
+
+        def finalize():
+            return dict([(k, v / count) for k, v in metrics.items()])
+
+        return accumulate, finalize
+
     def validate_model(self, model, data_loader):
         model.eval()
         loss = 0.0
-        correct = 0
-        f1s = []
+        accumulate, finalize = self.metric_accumulator()
         with torch.no_grad():
             for X, y in data_loader:
                 X, y = X.to(self.device), y.to(self.device)
                 scores = model(X)
                 loss += model.loss(scores, y, reduction='sum')  # sum up batch loss
                 pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-                correct += pred.eq(y.view_as(pred)).sum()
-
-                if torch.cuda.is_available():
-                  pred = pred.cpu().numpy()
-                  y = y.cpu().numpy()
-                f1 = f1_score(y, pred, average = "macro")
-                f1s.append(f1)
-          
-        loss /= len(data_loader.dataset)
-        accuracy = correct / len(data_loader.dataset)
-        f1 = torch.mean(torch.Tensor(f1s).to(self.device)).item()
-
-        return {
-            'loss': loss,
-            'accuracy': accuracy,
-            'f1': f1
-        }
+                accumulate(y, pred)
+        
+        metrics = finalize()
+        metrics['loss'] = loss / len(data_loader.dataset)
+        model.train()
+        return metrics
 
     def log_metrics(self, model, split, data, run, parameters, epoch=None):
-      data_loader = data.get_dataloader(parameters.batch_size, shuffle=False)
-      metrics = self.validate_model(model, data_loader)
+        data_loader = data.get_dataloader(parameters.batch_size, shuffle=False)
+        metrics = self.validate_model(model, data_loader)
 
-      loss = metrics['loss']
-      accuracy = metrics['accuracy']
-      f1 = metrics['f1']
-      if epoch == None:
-        print(f'Split: {split}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
-      else:
-        print(f'Split: {split}, Epoch: {epoch}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
-      
-      metrics['split'] = split
-      metrics['epoch'] = epoch
-      run.log(metrics)
+        loss = metrics['loss']
+        accuracy = metrics['accuracy']
+        f1 = metrics['f1']
+        if epoch == None:
+            print(f'Split: {split}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
+        else:
+            print(f'Split: {split}, Epoch: {epoch}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
+        
+        metrics['split'] = split
+        metrics['epoch'] = epoch
+        run.log(metrics)
 
     def get_data(self, config, run):
         data = {}
@@ -211,7 +226,7 @@ class SweepExperiment(WBExperiment):
             # log validation metric results to wandb
             model.eval()
             with torch.no_grad():
-              self.log_metrics(model, 'val', data['val'], run, run_parameters, run_parameters.epochs)
+                self.log_metrics(model, 'val', data['val'], run, run_parameters, run_parameters.epochs)
             if self.save_all:
                 self.save_model(model, self.wb_config['model'], run)
 
@@ -228,7 +243,6 @@ class SweepExperiment(WBExperiment):
                 optimizer.step()
 
         return model
-
 
 
 class TrainExperiment(WBExperiment):
@@ -294,8 +308,7 @@ class TrainExperiment(WBExperiment):
         train_loader = train_data.get_dataloader(run_parameters.batch_size, shuffle=True)
         val_loader = val_data.get_dataloader(run_parameters.batch_size, shuffle=False)
         example_count = 0
-        train_accuracy = 0
-        train_accuracy_samples = 0
+        accumulate, finalize = self.metric_accumulator() # accumulate metrics as we train
         for epoch in tqdm(range(run_parameters.epochs)):
             model.train()
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
@@ -303,30 +316,32 @@ class TrainExperiment(WBExperiment):
                 optimizer.zero_grad()
                 scores = model(X)
                 ypred = torch.argmax(scores, axis=1)
-                train_accuracy += (ypred == y).sum().item()
+                accumulate(y, ypred)
 
                 loss = model.loss(scores, y)
                 loss.backward()
                 optimizer.step()
 
                 example_count += len(X)
-                train_accuracy_samples += len(X)
 
                 if batch_idx % config['logging']['batch_log_interval'] == 0:
                     # print batch loss and accuracy
-                    accuracy = float(train_accuracy / train_accuracy_samples)
-                    print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {accuracy:.4f}')
-                    train_accuracy = 0
-                    train_accuracy_samples = 0
-
-                    if config['logging']['eval_every_batch']:
-                      self.log_metrics(model, 'val', val_data, run, run_parameters)
-                      model.train()
+                    metrics = finalize()
+                    accumulate, finalize = self.metric_accumulator() # reset the accumulator
+                    metrics['loss'] = loss
+                    print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {metrics["accuracy"]:.4f}')
+                    self.log_progress('train', metrics, example_count, run)
 
             if config['logging']['eval_every_epoch']:
-              # evaluate the model on the validation set at each epoch
-              self.log_metrics(model, 'val', val_data, run, run_parameters, epoch)
-            print('')
+                # evaluate the model on the validation set at each epoch
+                val_metrics = self.validate_model(model, val_loader)
+                self.log_progress('val', val_metrics, example_count, run)
+
+    def log_progress(self, split, metrics, example_count, run):
+        log_metrics = {}
+        for k, v in metrics.items():
+            log_metrics[f'{split}/{k}'] = float(v)
+        run.log(log_metrics, step=example_count)
 
 
 class EvalExperiment(WBExperiment):
