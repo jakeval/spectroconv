@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 import numpy as np
-
+from layers import max_norm_constraint
 
 
 class CnnClf(nn.Module):
@@ -20,9 +20,13 @@ class CnnClf(nn.Module):
         if parameters.dropout_input:
             self.dropout_input = nn.Dropout(parameters.dropout_input)
         self.class_names = class_enums
+        self.max_norm_layers = []
+        self.max_norm = parameters.max_norm
 
         for i in range(len(self.kernel_sizes)):
-            self.convs.append(nn.Conv2d(self.channels[i], self.channels[i+1], self.kernel_sizes[i], padding='same', stride=1))
+            conv = nn.Conv2d(self.channels[i], self.channels[i+1], self.kernel_sizes[i], padding='same', stride=1)
+            self.convs.append(conv)
+            self.max_norm_layers.append(conv)
             self.convs.append(nn.BatchNorm2d(self.channels[i+1]))
             self.convs.append(nn.ReLU())
             if parameters.dropout_conv > 0:
@@ -37,13 +41,16 @@ class CnnClf(nn.Module):
         self.fc1 = nn.Linear(h * w * final_num_channels, parameters.linear_layer_size)
         self.fc2 = nn.Linear(parameters.linear_layer_size, len(class_enums))
         
+        self.max_norm_layers.append(self.fc1)
+        self.max_norm_layers.append(self.fc2)
+
     def forward(self, x):
+        if self.training and self.max_norm is not None:
+            max_norm_constraint.max_norm(self.max_norm_layers, self.max_norm)
         if self.dropout_input is not None:
             x = self.dropout_input(x)
         x = self.convs(x)
-        #x = self.aap(x)
         x = torch.flatten(x, 1)
-        #x = self.fc(x)
         x = self.fc1(x)
         x = F.relu(x)
         if self.dropout_fc is not None:
