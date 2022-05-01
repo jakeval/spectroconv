@@ -101,7 +101,7 @@ class NsynthDataset:
     def set_code_lookup(self, code_lookup):
         self.code_lookup = code_lookup
 
-    def get_dataloader(self, batch_size, shuffle=True, include_ids=False):
+    def get_dataloader(self, batch_size, shuffle=True, include_ids=False, include_instrument=False):
         def transform_spectrogram(X):
             return X.reshape((1, X.shape[0], X.shape[1]))
         
@@ -114,6 +114,8 @@ class NsynthDataset:
         }
         if include_ids:
             transform.update({'id': None})
+        if include_instrument:
+            transform.update({'instrument': None})
 
         return self.ds.pytorch(
             batch_size = batch_size,

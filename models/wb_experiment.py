@@ -11,6 +11,7 @@ from torch import nn
 from sklearn.metrics import f1_score
 import wandb
 from tqdm.auto import tqdm
+import numpy as np
 
 from data_utils import nsynth_adapter as na
 from models import cnn_model, lc_model, lrlc_model
@@ -352,6 +353,7 @@ class TrainExperiment(WBExperiment):
 class EvalExperiment(WBExperiment):
     def __init__(self, wb_config, wb_defaults='./.wb.config', login_key=None, device=None, storage_dir='./.wandb_store'):
         super(self.__class__, self).__init__(wb_config, wb_defaults=wb_defaults, login_key=login_key, device=device, storage_dir=storage_dir)
+        self.device = 'cpu'
 
     def run_evaluate(self, run_config):
         """
@@ -382,7 +384,7 @@ class EvalExperiment(WBExperiment):
 
             self.log_evaluation(metrics, examples_df, model_stats, run)
 
-        return metrics, examples_df
+        return metrics, examples_df, model_stats
 
     def evaluate(self, model, data_dict, config):
         metrics = {}
@@ -412,37 +414,43 @@ class EvalExperiment(WBExperiment):
                 fc_count += 1
         return [[label, val] for (label, val) in zip(labels, norms)]
 
-
     def get_hardest_k_examples(self, model, data, k=32):
         model.eval()
-        loader = data.get_dataloader(64, shuffle=False, include_ids=True)
-        losses = None
-        predictions = None
-        ids = None
+        loader = data.get_dataloader(64, shuffle=False, include_ids=True, include_instrument=True)
+        ids = {}
+        losses = {}
+        predictions = {}
         with torch.no_grad():
-            for X, y, id in loader:
+            for X, y, id, instrument in loader:
                 X, y = X.to(self.device), y.to(self.device)
                 scores = model(X)
-                loss = model.loss(scores, y, reduction='none').view((-1, 1))
+                loss = model.loss(scores, y, reduction='none').squeeze()
                 pred = scores.argmax(dim=1, keepdim=True)
+                id = id.squeeze()
+                instrument = instrument.squeeze()
+                for i in range(loss.shape[0]):
+                    inst = instrument[i].item()
+                    l = loss[i].item()
+                    p = pred[i].item()
+                    id_ = id[i].item()
+                    if losses.get(inst, 0) < l:
+                        losses[inst] = l
+                        ids[inst] = id_
+                        predictions[inst] = p
 
-                if losses is None:
-                    losses = loss
-                    predictions = pred
-                    ids = id
-                else:
-                    losses = torch.cat((losses, loss), 0)
-                    predictions = torch.cat((predictions, pred), 0)
-                    ids = torch.cat((ids, id), 0)
+        keys = losses.keys()
+        losses = np.array([losses[k] for k in keys])
+        ids = np.array([ids[k] for k in keys])
+        predictions = np.array([predictions[k] for k in keys])
 
-        sorted_idx = torch.argsort(losses, dim=0).squeeze()
+        sorted_idx = np.argsort(losses, axis=0)
         highest_k_losses = losses[sorted_idx[-k:]]
         k_predictions = model.ordinal_to_class_enum(predictions[sorted_idx[-k:]])
         k_ids = ids[sorted_idx[-k:]]
         return {
             'losses': highest_k_losses,
             'predictions': k_predictions,
-            'ids': k_ids.squeeze().numpy()
+            'ids': k_ids
         }
 
     def get_examples_dataframe(self, examples, audio_split, data: na.NsynthDataset):
@@ -468,11 +476,14 @@ class EvalExperiment(WBExperiment):
         for split, split_metrics in metrics.items():
             for metric, value in split_metrics.items():
                 run.summary.update({f'{split}/{metric}': value})
+        print("logged the metrics")
         for split, df in examples_df.items():
             table = wandb.Table(dataframe=df)
             run.log({
                 f'{split}/high-loss-examples': table
             })
-        
+        print("logged the examples")
+
         norm_table = wandb.Table(data=model_stats['weight_norm'], columns=['layer', 'norm'])
-        run.log({"weight_norms": wandb.plot.bar(norm_table, 'label', 'value', title='Norm of Model Weights')})
+        run.log({"weight_norms": wandb.plot.bar(norm_table, 'layer', 'norm', title='Norm of Model Weights')})
+        print("logged the weights")
