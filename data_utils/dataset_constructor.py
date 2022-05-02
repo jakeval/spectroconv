@@ -83,6 +83,9 @@ class WBDatasetConstructor:
             hub_urls
                 source
                 target
+            augmentation
+                shift_up
+                shift_down
         """
         wb_config_ = {
             'job_type': 'preprocess'
@@ -100,8 +103,15 @@ class WBDatasetConstructor:
             if verbose:
               shape, size = dc.calculate_new_dataset_size()
               print(f"This dataset will be {size} gb and have shape {shape}.")
-              
-            dc.write_subset_to_dataset(verbose)
+            
+            params = {}
+            if 'augmentation' in config:
+                params = {
+                    'pitch_augment': True,
+                    'shift_up': config['augmentation']['shift_up'],
+                    'shift_down': config['augmentation']['shift_down']
+                }
+            dc.write_subset_to_dataset(verbose=verbose, **params)
 
             examples_df = dc.visualize_new_dataset(instruments_per_family=1)
             examples_table = self.process_examples(examples_df)
@@ -225,7 +235,7 @@ class DatasetConstructor:
             self.df = df
         return df
 
-    def write_subset_to_dataset(self, streaming_chunk_size=0.25, verbose=True):
+    def write_subset_to_dataset(self, streaming_chunk_size=0.25, verbose=True, pitch_augment=False, shift_up=None, shift_down=None):
         number_of_clips = self.df.shape[0]
         clip_size = self.samples_per_clip * 64 / 8e9 # gigabytes per clip
         clips_per_chunk = int(streaming_chunk_size / clip_size)
@@ -251,25 +261,46 @@ class DatasetConstructor:
             dt.create_tensor('instrument', htype='class_label')
             dt.create_tensor('instrument_family', htype='class_label')
             dt.create_tensor('pitch', htype='class_label')
-            dt.create_tensor('id', htype='class_label')
+            dt.create_tensor('id', htype='generic')
+            dt.create_tensor('augmented', htype='generic')
             for i in range(number_of_chunks):
                 start_time = time.time()
                 indices_to_load = indices[i * clips_per_chunk : (i + 1) * clips_per_chunk]
                 print(f"Load {len(indices_to_load)} audio clips...")
                 audio = self._clean_data(self.ds.audios[indices_to_load], dtype=np.float32)
+                #pitch = self._clean_data(self.ds.pitch[indices_to_load])
+                #family = self._clean_data(self.ds.instrument_family[indices_to_load])
+                shifted_audio = None
+                shifts = None
+                if pitch_augment:
+                    print("start shift")
+                    shifted_audio, shifts = preprocessing.get_augmented_data(audio, shift_up, shift_down)
+                    print("end shift")
                 print("Take the spectrogram...")
                 _, _, S = self.preprocessor.get_spectrograms(audio)
                 print("Write to the database...")
-                count = 0
                 for si, idx in zip(range(S.shape[0]), indices_to_load):
-                    count += 1
                     df = self.df[self.df['id'] == idx].iloc[0]
                     dt.append({
                         'spectrogram': S[si],
                         'instrument': df['instrument'],
                         'instrument_family': df['family'],
                         'pitch': df['pitch'],
-                        'id': idx })
+                        'id': idx,
+                        'augmented': -1 })
+                if shifted_audio is not None:
+                    _, _, S = self.preprocessor.get_spectrograms(audio)
+                    count = 0
+                    for si, idx in zip(range(S.shape[0]), indices_to_load):
+                        count += 1
+                        df = self.df[self.df['id'] == idx].iloc[0]
+                        dt.append({
+                            'spectrogram': S[si],
+                            'instrument': df['instrument'],
+                            'instrument_family': df['family'],
+                            'pitch': df['pitch'],
+                            'id': -1,
+                            'augmented': idx })
                 elapsed_time = time.time() - start_time
                 total_time += elapsed_time
                 if verbose:

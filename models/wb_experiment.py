@@ -51,6 +51,40 @@ class WBExperiment:
         if not os.path.exists(storage_dir):
             os.mkdir(storage_dir)
 
+    def metric_instrument_accumulator(self):
+        counts = {}
+
+        def accumulate(y_true, y_pred, instrument):
+            nonlocal counts
+
+            if torch.cuda.is_available():
+                y_pred = y_pred.cpu().squeeze()
+                y_true = y_true.cpu().squeeze()
+                instrument = instrument.cpu().squeeze()
+
+            for i in range(instrument.shape[0]):
+                inst = instrument[i]
+                d_inst = counts.get(inst, {'correct': 0, 'total': 0})
+                d_inst['total'] += 1
+                d_inst['family'] = y_pred[i].item()
+                if y_pred[i] == y_true[i]:
+                    d_inst['correct'] += 1
+                counts[inst] = d_inst
+
+        def finalize():
+            keys = counts.keys()
+            correct = np.array([counts[k]['correct'] for k in keys])
+            total = np.array([counts[k]['total'] for k in keys])
+            family = np.array([counts[k]['family'] for k in keys])
+            instrument_accuracy = correct / total
+            all_families = np.unique(family)
+            accuracy = 0
+            for f in all_families:
+                accuracy += instrument_accuracy[family == f].mean()
+            return accuracy / len(all_families)
+
+        return accumulate, finalize
+
     def metric_accumulator(self):
         metrics = {
             'accuracy': 0,
@@ -94,6 +128,23 @@ class WBExperiment:
         metrics['loss'] = loss / len(data_loader.dataset)
         model.train()
         return metrics
+
+    def validate_model_by_instrument(self, model, data_loader):
+        model.eval()
+        loss = 0.0
+        accumulate, finalize = self.metric_instrument_accumulator()
+        with torch.no_grad():
+            for X, y, instrument in data_loader:
+                X, y, instrument = X.to(self.device), y.to(self.device), instrument.to(self.device)
+                scores = model(X)
+                loss += model.loss(scores, y, reduction='sum')  # sum up batch loss
+                pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                accumulate(y, pred, instrument)
+        model.train()
+        return {
+            'accuracy': finalize(),
+            'loss': loss / len(data_loader.dataset)
+        }
 
     def log_metrics(self, model, split, data, run, parameters, epoch=None):
         data_loader = data.get_dataloader(parameters.batch_size, shuffle=False)
@@ -155,7 +206,7 @@ class WBExperiment:
         model_type = model_config['id']
         run_parameters = _as_named_tuple(model_config['parameters'])
         model = self.get_model(model_type, input_shape, class_enums, run_parameters)
-        model.load_state_dict(torch.load(model_path))
+        model.load_state_dict(torch.load(model_path, map_location=torch.device(self.device)))
         model = model.to(self.device)
         return model
 
@@ -394,9 +445,8 @@ class EvalExperiment(WBExperiment):
         for split, data in data_dict.items():
             data_loader = data.get_dataloader(64, shuffle=False)
             metrics[split] = self.validate_model(model, data_loader)
-            hard_examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
+            hard_examples, easy_examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
             hard_examples_df[split] = self.get_examples_dataframe(hard_examples, split, data)
-            easy_examples = self.get_easiest_k_examples(model, data, **config.get('examples', {}))
             easy_examples_df[split] = self.get_examples_dataframe(easy_examples, split, data)
         
         return metrics, hard_examples_df, easy_examples_df, model_stats
@@ -420,9 +470,9 @@ class EvalExperiment(WBExperiment):
     def get_hardest_k_examples(self, model, data, k=32):
         model.eval()
         loader = data.get_dataloader(64, shuffle=False, include_ids=True, include_instrument=True)
-        ids = {}
         losses = {}
-        predictions = {}
+        meta = {}
+        counts = {}
         with torch.no_grad():
             for X, y, id, instrument in loader:
                 X, y = X.to(self.device), y.to(self.device)
@@ -432,71 +482,57 @@ class EvalExperiment(WBExperiment):
                 id = id.squeeze()
                 instrument = instrument.squeeze()
                 for i in range(loss.shape[0]):
+                    if id[i].item() == -1:
+                        continue
                     inst = instrument[i].item()
                     l = loss[i].item()
                     p = pred[i].item()
                     id_ = id[i].item()
-                    if losses.get(inst, 0) < l:
-                        losses[inst] = l
-                        ids[inst] = id_
-                        predictions[inst] = p
+                    counts[inst] = counts.get(inst, 0) + 1
+                    losses[inst] = losses.get(inst, 0) + l
+                    inst_meta = meta.get(inst, {'low': {'loss': np.inf}, 'high': {'loss': 0}})
+                    if l < inst_meta['low']['loss']:
+                        inst_meta['low']['loss'] = l
+                        inst_meta['low']['id'] = id_
+                        inst_meta['low']['prediction'] = p
+                    if l > inst_meta['high']['loss']:
+                        inst_meta['high']['loss'] = l
+                        inst_meta['high']['id'] = id_
+                        inst_meta['high']['prediction'] = p
+                    meta[inst] = inst_meta
 
         keys = losses.keys()
-        print("total instruments found:", len(keys))
-        losses = np.array([losses[k] for k in keys])
-        ids = np.array([ids[k] for k in keys])
-        predictions = np.array([predictions[k] for k in keys])
+        counts = np.array([counts[k] for k in keys])
+        losses = np.array([losses[k] for k in keys]) / counts
+
+        low_id = np.array([meta[k]['low']['id'] for k in keys])
+        low_prediction = np.array([meta[k]['low']['prediction'] for k in keys])
+
+        high_id = np.array([meta[k]['high']['id'] for k in keys])
+        high_prediction = np.array([meta[k]['high']['prediction'] for k in keys])
 
         sorted_idx = np.argsort(losses, axis=0)
         highest_k_losses = losses[sorted_idx[-k:]]
-        k_predictions = model.ordinal_to_class_enum(predictions[sorted_idx[-k:]])
-        k_ids = ids[sorted_idx[-k:]]
-        return {
+        k_high_pred = model.ordinal_to_class_enum(high_prediction[sorted_idx[-k:]])
+        k_high_id = high_id[sorted_idx[-k:]]
+
+        lowest_k_losses = losses[sorted_idx[:k]]
+        k_low_pred = model.ordinal_to_class_enum(low_prediction[sorted_idx[:k]])
+        k_low_id = low_id[sorted_idx[:k]]
+
+        high_dict = {
             'losses': highest_k_losses,
-            'predictions': k_predictions,
-            'ids': k_ids
+            'predictions': k_high_pred,
+            'ids': k_high_id
         }
 
-    def get_easiest_k_examples(self, model, data, k=32):
-        model.eval()
-        loader = data.get_dataloader(64, shuffle=False, include_ids=True, include_instrument=True)
-        ids = {}
-        losses = {}
-        predictions = {}
-        with torch.no_grad():
-            for X, y, id, instrument in loader:
-                X, y = X.to(self.device), y.to(self.device)
-                scores = model(X)
-                loss = model.loss(scores, y, reduction='none').squeeze()
-                pred = scores.argmax(dim=1, keepdim=True)
-                id = id.squeeze()
-                instrument = instrument.squeeze()
-                for i in range(loss.shape[0]):
-                    inst = instrument[i].item()
-                    l = loss[i].item()
-                    p = pred[i].item()
-                    id_ = id[i].item()
-                    if losses.get(inst, np.inf) > l:
-                        losses[inst] = l
-                        ids[inst] = id_
-                        predictions[inst] = p
-
-        keys = losses.keys()
-        print("total instruments found:", len(keys))
-        losses = np.array([losses[k] for k in keys])
-        ids = np.array([ids[k] for k in keys])
-        predictions = np.array([predictions[k] for k in keys])
-
-        sorted_idx = np.argsort(losses, axis=0)
-        highest_k_losses = losses[sorted_idx[-k:]]
-        k_predictions = model.ordinal_to_class_enum(predictions[sorted_idx[-k:]])
-        k_ids = ids[sorted_idx[-k:]]
-        return {
-            'losses': highest_k_losses,
-            'predictions': k_predictions,
-            'ids': k_ids
+        low_dict = {
+            'losses': lowest_k_losses,
+            'predictions': k_low_pred,
+            'ids': k_low_id
         }
 
+        return high_dict, low_dict
 
     def get_examples_dataframe(self, examples, audio_split, data: na.NsynthDataset):
         df = data.get_dataframe(examples['ids'], audio_split)
