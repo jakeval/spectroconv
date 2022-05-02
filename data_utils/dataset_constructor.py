@@ -235,16 +235,9 @@ class DatasetConstructor:
 
         if verbose:
             print(f"{number_of_clips} clips will be written in {number_of_chunks} chunks.")
-            print("Write the metadata...")
-        audio = self._clean_data(self.ds.audios[0], dtype=np.float32)
-        f, t, _ = self.preprocessor.get_spectrograms(audio)
-        dmeta = hub.empty(f"{self.target}-metadata", overwrite=True, token=self.token)
-        with dmeta:
-            dmeta.create_tensor('f', htype='generic')
-            dmeta.create_tensor('t', htype='generic')
-            dmeta.append({'f': f, 't': t})
-        if verbose:
-            print("Finished. Writing spectrograms...")
+
+        means = []
+        stds = []
         dt = hub.empty(self.target, overwrite=True, token=self.token)
         with dt:
             dt.create_tensor('spectrogram', htype='generic')
@@ -259,6 +252,9 @@ class DatasetConstructor:
                 audio = self._clean_data(self.ds.audios[indices_to_load], dtype=np.float32)
                 print("Take the spectrogram...")
                 _, _, S = self.preprocessor.get_spectrograms(audio)
+                means.append(np.mean(S, axis=0))
+                stds.append(np.std(S, axis=0))
+
                 print("Write to the database...")
                 count = 0
                 for si, idx in zip(range(S.shape[0]), indices_to_load):
@@ -275,7 +271,37 @@ class DatasetConstructor:
                 if verbose:
                     remaining_time = (total_time / (i+1)) * (number_of_chunks - (i+1))
                     print(f"Wrote data chunk {i+1}/{number_of_chunks} in {elapsed_time} seconds. ~{remaining_time/60} minutes remaining.")
+
         print(f"Finished writing data in {total_time/60} minutes")
+
+        if verbose:
+            print("Writing the metadata...")
+
+        means = np.array(means)
+        print(means.shape)
+        stds = np.array(stds)
+        print(stds.shape)
+
+        mean = np.mean(means, axis=0)
+        std = np.mean(stds, axis=0)
+        print("Calculated: mean =", mean.shape, ", std =", std.shape)
+
+        audio = self._clean_data(self.ds.audios[0], dtype=np.float32)
+        f, t, _ = self.preprocessor.get_spectrograms(audio)
+        dmeta = hub.empty(f"{self.target}-metadata", overwrite=True, token=self.token)
+        with dmeta:
+            dmeta.create_tensor('f', htype='generic')
+            dmeta.create_tensor('t', htype='generic')
+            dmeta.create_tensor('mean', htype='generic')
+            dmeta.create_tensor('std', htype='generic')
+
+            dmeta.append({'f': f,
+                          't': t,
+                          'mean': mean,
+                          'std': std })
+        if verbose:
+            print("Finished writing metadata...")
+        
 
     def calculate_new_dataset_size(self):
         audio = self._clean_data(self.ds.audios[0], dtype=np.float32)

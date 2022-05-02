@@ -4,13 +4,12 @@ import librosa
 
 
 class SpectrogramPreprocessor:
-    def __init__(self, max_freq=None, max_time=None, window_size=1024, n_mels=None, scaling=1000):
+    def __init__(self, max_freq=None, max_time=None, window_size=1024, n_mels=None):
         self.max_freq = max_freq
         self.max_time = max_time
         self.window_size = window_size
         self.n_mels = n_mels
         self.sample_rate = None
-        self.scaling = scaling
 
     def set_sample_rate(self, sample_rate):
         self.sample_rate = sample_rate
@@ -21,10 +20,11 @@ class SpectrogramPreprocessor:
                                      nperseg=self.window_size,
                                      mode='magnitude',
                                      scaling='spectrum')
+
         f, t, s = crop_image(f, t, s, self.max_freq, self.max_time)
         if self.n_mels is not None:
             f, s = self.mel_compression(f, s, self.n_mels)
-        return f, t, s * self.scaling
+        return f, t, s
 
     def mel_compression(self, f, s, n_mels):
         n_fft = (s.shape[-2]-1)*2

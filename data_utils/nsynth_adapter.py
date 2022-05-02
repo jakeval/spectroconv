@@ -72,7 +72,7 @@ class NsynthDataset:
             with open(token_file) as f:
                 self.token = f.read().strip()
 
-    def initialize(self, code_lookup=None):
+    def initialize(self, code_lookup=None, train_source = None):
         metads = None
         if self.token is not None:
             metads = hub.load(f"{self.source}-metadata", token=self.token, read_only=True)
@@ -83,7 +83,7 @@ class NsynthDataset:
         
         self.f = self._clean_data(metads.f, dtype=np.float32)
         self.t = self._clean_data(metads.t, dtype=np.float32)
-        
+
         self.df = pd.DataFrame({
             'id': self._clean_data(self.ds.id),
             'family': self._clean_data(self.ds.instrument_family),
@@ -101,8 +101,25 @@ class NsynthDataset:
     def set_code_lookup(self, code_lookup):
         self.code_lookup = code_lookup
 
+
+    def set_train_source(self, train_source):
+        metads = None
+        if self.token is not None:
+            metads = hub.load(f"{train_source}-metadata", token=self.token, read_only=True)
+        else:
+            metads = hub.load(f"{train_source}-metadata", read_only=True)
+
+        self.train_mean = self._clean_data(metads.mean, dtype=np.float32)
+        self.train_std = self._clean_data(metads.std, dtype=np.float32)
+        
+
+    def normalize(self, X):
+      X = (X - self.train_mean) / self.train_std
+      return X
+
     def get_dataloader(self, batch_size, shuffle=True, include_ids=False):
         def transform_spectrogram(X):
+            X = self.normalize(X)
             return X.reshape((1, X.shape[0], X.shape[1]))
         
         def transform_family(y):

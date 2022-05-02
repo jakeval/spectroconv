@@ -20,6 +20,7 @@ class ModelType(enum.IntEnum):
     CNN = 0
     LC = 1
     LRLC = 2
+    Taenzer = 3
 
 
 class WBExperiment:
@@ -51,9 +52,15 @@ class WBExperiment:
         loss = 0.0
         correct = 0
         f1s = []
+        #printed=False
         with torch.no_grad():
             for X, y in data_loader:
                 X, y = X.to(self.device), y.to(self.device)
+                print('======VAL========')
+                print('-1', X.shape)
+                print('0', torch.max(X), torch.mean(X))
+                
+
                 scores = model(X)
                 loss += model.loss(scores, y, reduction='sum')  # sum up batch loss
                 pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
@@ -63,6 +70,12 @@ class WBExperiment:
                   pred = pred.cpu().numpy()
                   y = y.cpu().numpy()
                 f1 = f1_score(y, pred, average = "macro")
+
+                #if not printed:
+                #  print('scores\t\ty')
+                #  print(scores[0:5], '\n', y[0:5], '\n', pred[0:5], '\n',  f1_score(y, pred, average = None))
+                #  printed = True
+
                 f1s.append(f1)
           
         loss /= len(data_loader.dataset)
@@ -83,9 +96,9 @@ class WBExperiment:
       accuracy = metrics['accuracy']
       f1 = metrics['f1']
       if epoch == None:
-        print(f'Split: {split}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
+        print(f'Split: {split}, Loss: {loss:.2f},\tAccuracy: {accuracy:.4f},\tF1: {f1:.4f}')
       else:
-        print(f'Split: {split}, Epoch: {epoch}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
+        print(f'Epoch: {epoch}, Split: {split}, Loss: {loss:.2f},\tAccuracy: {accuracy:.4f},\tF1: {f1:.4f}')
       
       metrics['split'] = split
       metrics['epoch'] = epoch
@@ -95,17 +108,26 @@ class WBExperiment:
         data = {}
         code_lookup = None
 
+        train_source = None
         for split, split_config in config.items():
             name = split_config['name']
             version = split_config.get('version', 'latest')
             dataset_artifact = run.use_artifact(f'{name}:{version}')
+
             source = dataset_artifact.metadata['dataset_url']
+
+            if split == 'train':
+              train_source = source
+
             nds = na.NsynthDataset(source=source)
             if code_lookup is None:
                 code_lookup = nds.initialize()
             else:
                 nds.initialize(code_lookup)
             data[split] = nds
+        
+        for split, nds in data.items():
+          nds.set_train_source(train_source)
 
         return data
 
@@ -123,6 +145,8 @@ class WBExperiment:
             return lc_model.LcClf(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LRLC:
             return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
+        if model_type == ModelType.Taenzer:
+            return cnn_model.CnnTaenzer(input_shape, class_enums, parameters).float().to(self.device)
             
 
     def load_model(self, model_name, run, input_shape, model_version='latest'):
@@ -198,10 +222,10 @@ class SweepExperiment(WBExperiment):
             run_parameters = wandb.config
             run.name = self.wb_config['sweep_config']['name'] + '-' + run.id
             data = self.get_data(self.wb_config['data'], run)
-
             input_shape = data['train'].sample_shape()
             class_enums = na.codes_to_enums(data['train'].code_lookup)
 
+            data['val']
             model = self.get_model(self.wb_config['model']['id'], input_shape, class_enums, run_parameters)
             
             optimizer = self.get_optimizer(run_parameters, model)
@@ -301,6 +325,10 @@ class TrainExperiment(WBExperiment):
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
+
+                print('-1', X.shape)
+                print('0', torch.max(X))
+
                 scores = model(X)
                 ypred = torch.argmax(scores, axis=1)
                 train_accuracy += (ypred == y).sum().item()
@@ -315,7 +343,7 @@ class TrainExperiment(WBExperiment):
                 if batch_idx % config['logging']['batch_log_interval'] == 0:
                     # print batch loss and accuracy
                     accuracy = float(train_accuracy / train_accuracy_samples)
-                    print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {accuracy:.4f}')
+                    print(f'Batch {batch_idx}: Loss: {loss.item():.4f},\tAccuracy: {accuracy:.4f}')
                     train_accuracy = 0
                     train_accuracy_samples = 0
 
