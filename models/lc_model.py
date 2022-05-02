@@ -12,7 +12,7 @@ class LcClfNorm(nn.Module):
         
         self.convs = []
         self.pool = nn.MaxPool2d(2,2)
-        self.kernel_sizes = [parameters.kernel_size] * parameters.num_conv_layers
+        self.kernel_sizes = [parameters.kernel_size] * len(parameters.num_channels)
         self.channels = [1] + parameters.num_channels
         self.dropout_fc, self.dropout_input = None, None
         if parameters.dropout_fc:
