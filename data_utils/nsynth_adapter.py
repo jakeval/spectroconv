@@ -89,7 +89,7 @@ class NsynthDataset:
             'family': self._clean_data(self.ds.instrument_family),
             'instrument': self._clean_data(self.ds.instrument),
             'pitch': self._clean_data(self.ds.pitch),
-            'augmented': self._clean_data(self.ds.augmented)
+            #'augmented': self._clean_data(self.ds.augmented)
         })
 
         self.codes = self.df['family'].unique()
