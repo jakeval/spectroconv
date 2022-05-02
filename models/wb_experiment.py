@@ -25,6 +25,7 @@ class ModelType(enum.IntEnum):
     CNN = 0
     LC = 1
     LRLC = 2
+    Taenzer = 3
 
 
 class WBExperiment:
@@ -118,65 +119,59 @@ class WBExperiment:
         accumulate, finalize = self.metric_accumulator()
         with torch.no_grad():
             for X, y in data_loader:
-                X, y = X.to(self.device), y.to(self.device)
+                X, y = X.to(self.device), y.to(self.device)                
+
                 scores = model(X)
                 loss += model.loss(scores, y, reduction='sum')  # sum up batch loss
                 pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
                 accumulate(y, pred)
-        
+
         metrics = finalize()
         metrics['loss'] = loss / len(data_loader.dataset)
         model.train()
         return metrics
 
-    def validate_model_by_instrument(self, model, data_loader):
-        model.eval()
-        loss = 0.0
-        accumulate, finalize = self.metric_instrument_accumulator()
-        with torch.no_grad():
-            for X, y, instrument in data_loader:
-                X, y, instrument = X.to(self.device), y.to(self.device), instrument.to(self.device)
-                scores = model(X)
-                loss += model.loss(scores, y, reduction='sum')  # sum up batch loss
-                pred = scores.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-                accumulate(y, pred, instrument)
-        model.train()
-        return {
-            'accuracy': finalize(),
-            'loss': loss / len(data_loader.dataset)
-        }
-
     def log_metrics(self, model, split, data, run, parameters, epoch=None):
-        data_loader = data.get_dataloader(parameters.batch_size, shuffle=False)
-        metrics = self.validate_model(model, data_loader)
+      data_loader = data.get_dataloader(parameters.batch_size, shuffle=False)
+      metrics = self.validate_model(model, data_loader)
 
-        loss = metrics['loss']
-        accuracy = metrics['accuracy']
-        f1 = metrics['f1']
-        if epoch == None:
-            print(f'Split: {split}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
-        else:
-            print(f'Split: {split}, Epoch: {epoch}, Loss: {loss:.2f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}')
-        
-        metrics['split'] = split
-        metrics['epoch'] = epoch
-        run.log(metrics)
+      loss = metrics['loss']
+      accuracy = metrics['accuracy']
+      f1 = metrics['f1']
+      if epoch == None:
+        print(f'Split: {split}, Loss: {loss:.2f},\tAccuracy: {accuracy:.4f},\tF1: {f1:.4f}')
+      else:
+        print(f'Epoch: {epoch}, Split: {split}, Loss: {loss:.2f},\tAccuracy: {accuracy:.4f},\tF1: {f1:.4f}')
+      
+      metrics['split'] = split
+      metrics['epoch'] = epoch
+      run.log(metrics)
 
     def get_data(self, config, run):
         data = {}
         code_lookup = None
 
+        train_source = None
         for split, split_config in config.items():
             name = split_config['name']
             version = split_config.get('version', 'latest')
             dataset_artifact = run.use_artifact(f'{name}:{version}')
+
             source = dataset_artifact.metadata['dataset_url']
+
+            if split == 'train':
+              train_source = source
+
             nds = na.NsynthDataset(source=source)
             if code_lookup is None:
                 code_lookup = nds.initialize()
             else:
                 nds.initialize(code_lookup)
             data[split] = nds
+        
+        for split, nds in data.items():
+          nds.set_train_source(train_source)
+
         return data
 
     def update_data(self, data, class_names):
@@ -193,6 +188,9 @@ class WBExperiment:
             return lc_model.LcClfNorm(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LRLC:
             return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
+        if model_type == ModelType.Taenzer:
+            return cnn_model.CnnTaenzer(input_shape, class_enums, parameters).float().to(self.device)
+            
 
     def load_model(self, model_name, run, input_shape, model_version='latest'):
         model_artifact = run.use_artifact(f"{model_name}:{model_version}")
@@ -270,10 +268,10 @@ class SweepExperiment(WBExperiment):
             run_parameters = wandb.config
             run.name = self.wb_config['sweep_config']['name'] + '-' + run.id
             data = self.get_data(self.wb_config['data'], run)
-
             input_shape = data['train'].sample_shape()
             class_enums = na.codes_to_enums(data['train'].code_lookup)
 
+            data['val']
             model = self.get_model(self.wb_config['model']['id'], input_shape, class_enums, run_parameters)
             
             optimizer = self.get_optimizer(run_parameters, model)
@@ -371,6 +369,10 @@ class TrainExperiment(WBExperiment):
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
+
+                print('-1', X.shape)
+                print('0', torch.max(X))
+
                 scores = model(X)
                 ypred = torch.argmax(scores, axis=1)
                 accumulate(y, ypred)
