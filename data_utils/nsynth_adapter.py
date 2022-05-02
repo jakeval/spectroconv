@@ -102,7 +102,6 @@ class NsynthDataset:
     def set_code_lookup(self, code_lookup):
         self.code_lookup = code_lookup
 
-
     def set_train_source(self, train_source):
         metads = None
         if self.token is not None:
@@ -112,17 +111,17 @@ class NsynthDataset:
 
         self.train_mean = self._clean_data(metads.mean, dtype=np.float32)
         self.train_std = self._clean_data(metads.std, dtype=np.float32)
-        
 
     def normalize(self, X):
-      X = (X - self.train_mean) / self.train_std
-      return X
+        X = (X - self.train_mean) / self.train_std
+        return X
 
-    def get_dataloader(self, batch_size, shuffle=True, include_ids=False, include_instrument=False):
+    def get_dataloader(self, batch_size, shuffle=True, include_ids=False, include_instrument=False, normalize=False):
         def transform_spectrogram(X):
-            X = self.normalize(X)
+            if normalize:
+                X = self.normalize(X)
             return X.reshape((1, X.shape[0], X.shape[1]))
-        
+
         def transform_family(y):
             return np.int64(self.id_to_ordinal(y.squeeze())) #self.id_to_ordinal(y)
 

@@ -147,7 +147,7 @@ class WBExperiment:
       metrics['epoch'] = epoch
       run.log(metrics)
 
-    def get_data(self, config, run):
+    def get_data(self, config, run, normalize=False):
         data = {}
         code_lookup = None
 
@@ -169,8 +169,9 @@ class WBExperiment:
                 nds.initialize(code_lookup)
             data[split] = nds
         
-        for split, nds in data.items():
-          nds.set_train_source(train_source)
+        if normalize:
+            for split, nds in data.items():
+                nds.set_train_source(train_source)
 
         return data
 
@@ -267,7 +268,7 @@ class SweepExperiment(WBExperiment):
             # this config will be set by Sweep Controller
             run_parameters = wandb.config
             run.name = self.wb_config['sweep_config']['name'] + '-' + run.id
-            data = self.get_data(self.wb_config['data'], run)
+            data = self.get_data(self.wb_config['data'], run, normalize=run_parameters.normalize)
             input_shape = data['train'].sample_shape()
             class_enums = na.codes_to_enums(data['train'].code_lookup)
 
@@ -286,7 +287,7 @@ class SweepExperiment(WBExperiment):
                 self.save_model(model, self.wb_config['model'], run_parameters._asdict(), run)
 
     def train(self, model, train_data, optimizer, config, run: wandb.run):
-        train_loader = train_data.get_dataloader(config.batch_size, shuffle=True)
+        train_loader = train_data.get_dataloader(config.batch_size, shuffle=True, normalize=config.normalize)
         for epoch in tqdm(range(config.epochs)):
             model.train()
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
@@ -369,9 +370,6 @@ class TrainExperiment(WBExperiment):
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
-
-                print('-1', X.shape)
-                print('0', torch.max(X))
 
                 scores = model(X)
                 ypred = torch.argmax(scores, axis=1)
