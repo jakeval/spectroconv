@@ -3,6 +3,23 @@ import numpy as np
 import librosa
 
 
+def get_augmented_data(audio, shift_up, shift_down):
+    num_bins = 10
+    shifted_audio = np.zeros_like(audio)
+    shifts = np.zeros(shifted_audio.shape[0])
+    for i in range(audio.shape[0]):
+        shift = 0
+        if np.random.random() > 0.5:
+            max_shift = int(np.floor((shift_up - 1) * num_bins))
+            shift = np.random.randint(1, max_shift+1)
+        else:
+            max_shift = int(np.floor((shift_down - 1) * num_bins))
+            shift = -1 * np.random.randint(1, max_shift+1)
+        shifted_audio[i] = librosa.effects.pitch_shift(audio[i].squeeze(), sr=16000, n_steps=shift, bins_per_octave=num_bins)
+        shifts[i] = shift / num_bins
+    return shifted_audio, shifts
+
+
 class SpectrogramPreprocessor:
     def __init__(self, max_freq=None, max_time=None, window_size=1024, n_mels=None):
         self.max_freq = max_freq

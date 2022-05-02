@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 import numpy as np
-from layers import lrlc_layer
+from layers import lrlc_layer, max_norm_constraint
 
 
 class LrlcClf(nn.Module):
@@ -11,9 +11,15 @@ class LrlcClf(nn.Module):
         h, w = input_shape
         
         self.convs = []
+        self.max_norm_layers = []
         self.pool = nn.MaxPool2d(2,2)
-        self.kernel_sizes = [parameters.kernel_size] * parameters.num_conv_layers
-        self.channels = [1] + [i * parameters.num_channels for i in range(1, parameters.num_conv_layers+1)]
+        self.kernel_sizes = [parameters.kernel_size] * len(parameters.num_channels)
+        self.channels = [1] + parameters.num_channels
+        if parameters.dropout_fc:
+            self.dropout_fc = nn.Dropout(parameters.dropout_fc)
+        if parameters.dropout_input:
+            self.dropout_input = nn.Dropout(parameters.dropout_input)
+        self.max_norm = parameters.max_norm
 
         self.local_dim = parameters.local_dim
         self.rank = parameters.rank
@@ -22,38 +28,55 @@ class LrlcClf(nn.Module):
 
         for i in range(len(self.kernel_sizes)):
             self.convs.append(nn.Conv2d(self.channels[i], self.channels[i+1], self.kernel_sizes[i], padding='same', stride=1))
+            self.max_norm_layers.append(self.convs[-1])
             self.convs.append(nn.BatchNorm2d(self.channels[i+1]))
             self.convs.append(nn.ReLU())
-            if parameters.dropout > 0:
-              self.convs.append(nn.Dropout2d(p=parameters.dropout))
+            if parameters.dropout_conv > 0:
+              self.convs.append(nn.Dropout2d(p=parameters.dropout_conv))
             self.convs.append(self.pool)
             h = h // 2
             w = w // 2
         #print('h', h, 'w', w)
         self.convs = nn.Sequential(*self.convs)
-        
-        final_num_channels = parameters.num_channels * parameters.num_conv_layers
 
+        lrlc = []
         self.lrlc_layer = lrlc_layer.LowRankLocallyConnected(self.rank, (h,w), self.channels[-1], self.lrlc_channels, padding='same', local_dim=self.local_dim)
         if self.lcw:
-            self.combining_weights = lrlc_layer.LocalizationCombiningWeights(self.rank, (h,w), self.lrlc_layer.L, self.channels[-1], 2, local_dim=self.local_dim)
+            self.combining_weights = lrlc_layer.LocalizationCombiningWeights(self.rank, (h,w), self.lrlc_layer.L, self.channels[-1], parameters.low_dim, local_dim=self.local_dim)
         else:
             self.combining_weights = lrlc_layer.OuterCombiningWeights(self.rank, self.lrlc_layer.L, local_dim=self.local_dim)
+        self.max_norm_layers.append(self.lrlc_layer)
+        lrlc.append(nn.BatchNorm2d(parameters.lrlc_channels))
+        lrlc.append(nn.ReLU())
+        if parameters.dropout_conv > 0:
+            lrlc.append(nn.Dropout(p=parameters.dropout_conv)) # don't use spatial dropout -- filter maps are less correlated
+        lrlc.append(self.pool)
+        self.lrlc_followup = nn.Sequential(*lrlc)
+        h = h // 2
+        w = w // 2
 
         self.fc1 = nn.Linear(h*w*self.lrlc_channels, parameters.linear_layer_size)
         self.fc2 = nn.Linear(parameters.linear_layer_size, len(class_enums))
+        self.max_norm_layers.append(self.fc1)
+        self.max_norm_layers.append(self.fc2)
+
         self.class_names = class_enums
-        
+
     def forward(self, x):
+        if self.training and self.max_norm is not None:
+            max_norm_constraint.max_norm(self.max_norm_layers, self.max_norm)
         x = self.convs(x)
         cw = None
         if self.lcw:
             cw = self.combining_weights(x)
         else:
             cw = self.combining_weights()
-        x = F.relu(self.lrlc_layer(x, cw))
+        x = self.lrlc_layer(x, cw)
+        x = self.lrlc_followup(x)
         x = torch.flatten(x, 1)
         x = F.relu(self.fc1(x))
+        if self.dropout_fc is not None:
+            x = self.dropout_fc(x)
         x = self.fc2(x)
         return x
     

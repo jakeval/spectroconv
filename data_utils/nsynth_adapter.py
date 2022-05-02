@@ -28,7 +28,7 @@ class PlayableAudio:
         self.s = s
         self.audio = audio
         self.sr = sample_rate
-        
+
     def visualize(self, max_freq=None, max_time=None):
         fig, ax = plt.subplots()
         f, t, s = preprocessing.crop_image(self.f, self.t, self.s, max_freq, max_time)
@@ -37,7 +37,7 @@ class PlayableAudio:
         ax.set_xlabel('Time (sec)')
         plt.close(fig)
         return fig, ax
-    
+
     def play(self):
         show_audio = display.Audio(self.audio, rate=self.sr)
         display.DisplayHandle().display(show_audio)
@@ -88,7 +88,8 @@ class NsynthDataset:
             'id': self._clean_data(self.ds.id),
             'family': self._clean_data(self.ds.instrument_family),
             'instrument': self._clean_data(self.ds.instrument),
-            'pitch': self._clean_data(self.ds.pitch)
+            'pitch': self._clean_data(self.ds.pitch),
+            #'augmented': self._clean_data(self.ds.augmented)
         })
 
         self.codes = self.df['family'].unique()
@@ -117,7 +118,7 @@ class NsynthDataset:
       X = (X - self.train_mean) / self.train_std
       return X
 
-    def get_dataloader(self, batch_size, shuffle=True, include_ids=False):
+    def get_dataloader(self, batch_size, shuffle=True, include_ids=False, include_instrument=False):
         def transform_spectrogram(X):
             X = self.normalize(X)
             return X.reshape((1, X.shape[0], X.shape[1]))
@@ -131,6 +132,8 @@ class NsynthDataset:
         }
         if include_ids:
             transform.update({'id': None})
+        if include_instrument:
+            transform.update({'instrument': None})
 
         return self.ds.pytorch(
             batch_size = batch_size,
