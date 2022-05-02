@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 import numpy as np
-from layers import local_layer
+from layers import local_layer, max_norm_constraint
 
 
 class LcClfNorm(nn.Module):
@@ -48,7 +48,7 @@ class LcClfNorm(nn.Module):
             self.lc_layer = local_layer.LocallyConnected((h,w) , final_num_channels, parameters.lc_channel, padding='same')
             lc.append(self.lc_layer)
         self.max_norm_layers.append(self.lc_layer)
-        lc.append(nn.BatchNorm2d(self.channels[i+1]))
+        lc.append(nn.BatchNorm2d(parameters.lc_channel))
         lc.append(nn.ReLU())
         if parameters.dropout_conv > 0:
             lc.append(nn.Dropout(p=parameters.dropout_conv)) # don't use spatial dropout -- filter maps are less correlated
@@ -63,6 +63,8 @@ class LcClfNorm(nn.Module):
         self.max_norm_layers.append(self.fc2)
         
     def forward(self, x):
+        if self.training and self.max_norm is not None:
+            max_norm_constraint.max_norm(self.max_norm_layers, self.max_norm)
         x = self.convs(x)
         x = self.lc(x)
         x = torch.flatten(x, 1)
