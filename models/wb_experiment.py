@@ -191,7 +191,6 @@ class WBExperiment:
             return lrlc_model.LRLCTaenzer(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.Taenzer:
             return cnn_model.CnnTaenzer(input_shape, class_enums, parameters).float().to(self.device)
-            
 
     def load_model(self, model_name, run, input_shape, model_version='latest'):
         model_artifact = run.use_artifact(f"{model_name}:{model_version}")
@@ -389,10 +388,9 @@ class TrainExperiment(WBExperiment):
                     print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {metrics["accuracy"]:.4f}')
                     self.log_progress('train', metrics, example_count, run)
 
-            if config['logging']['eval_every_epoch']:
-                # evaluate the model on the validation set at each epoch
-                val_metrics = self.validate_model(model, val_loader)
-                self.log_progress('val', val_metrics, example_count, run)
+                if example_count % config['logging']['eval_log_interval'] == 0:
+                    val_metrics = self.validate_model(model, val_loader)
+                    self.log_progress('val', val_metrics, example_count, run)
 
     def log_progress(self, split, metrics, example_count, run):
         log_metrics = {}
