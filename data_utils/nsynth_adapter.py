@@ -51,7 +51,7 @@ class NsynthDataset:
     default_audio_validate = 'hub://activeloop/nsynth-val'
     default_audio_test = 'hub://activeloop/nsynth-test'
 
-    def __init__(self, source='train', token_file='./.activeloop.key'):
+    def __init__(self, source='train', token_file='./.activeloop.key', normalize=False):
         if source == 'train':
             self.source = NsynthDataset.default_source_train
         elif source == 'val':
@@ -60,6 +60,7 @@ class NsynthDataset:
             self.source = NsynthDataset.default_source_test
         else:
             self.source = source
+        self.normalize_data = normalize
         self.df = None
         self.ds = None
         self.f = None
@@ -116,9 +117,9 @@ class NsynthDataset:
         X = (X - self.train_mean) / self.train_std
         return X
 
-    def get_dataloader(self, batch_size, shuffle=True, include_ids=False, include_instrument=False, normalize=False):
+    def get_dataloader(self, batch_size, shuffle=True, include_ids=False, include_instrument=False):
         def transform_spectrogram(X):
-            if normalize:
+            if self.normalize_data:
                 X = self.normalize(X)
             return X.reshape((1, X.shape[0], X.shape[1]))
 

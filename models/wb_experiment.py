@@ -162,7 +162,7 @@ class WBExperiment:
             if split == 'train':
               train_source = source
 
-            nds = na.NsynthDataset(source=source)
+            nds = na.NsynthDataset(source=source, normalize=normalize)
             if code_lookup is None:
                 code_lookup = nds.initialize()
             else:
@@ -188,7 +188,7 @@ class WBExperiment:
         if model_type == ModelType.LC:
             return lc_model.LcClfNorm(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LRLC:
-            return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
+            return lrlc_model.LRLCTaenzer(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.Taenzer:
             return cnn_model.CnnTaenzer(input_shape, class_enums, parameters).float().to(self.device)
             
@@ -287,7 +287,7 @@ class SweepExperiment(WBExperiment):
                 self.save_model(model, self.wb_config['model'], run_parameters._asdict(), run)
 
     def train(self, model, train_data, optimizer, config, run: wandb.run):
-        train_loader = train_data.get_dataloader(config.batch_size, shuffle=True, normalize=config.normalize)
+        train_loader = train_data.get_dataloader(config.batch_size, shuffle=True)
         for epoch in tqdm(range(config.epochs)):
             model.train()
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
