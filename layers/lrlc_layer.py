@@ -61,7 +61,7 @@ class LocallyConnectedCombiningWeights(nn.Module):
 
 
 class LocalizationCombiningWeights(nn.Module):
-    def __init__(self, rank, input_shape, output_shape, in_channels, low_dim_channels, local_dim=None, aggregation='max'):
+    def __init__(self, rank, input_shape, output_shape, in_channels, low_dim_channels, local_dim=None, aggregation='max', device="cpu"):
         super(LocalizationCombiningWeights, self).__init__()
         self.size = output_shape
         self.local_dim = local_dim
@@ -91,7 +91,7 @@ class LocalizationCombiningWeights(nn.Module):
                         padding='valid',
                         bias=True,
                         groups=low_dim_channels,
-                        dilation=r))
+                        dilation=r).to(device))
 
         multiscale_out = (len(self.multiscale_layers) + 2) * low_dim_channels
         ch1 = (len(self.multiscale_layers) + 2) * rank

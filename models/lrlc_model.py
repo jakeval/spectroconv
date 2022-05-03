@@ -108,21 +108,21 @@ class LrlcClf(nn.Module):
 
 
 class TaenzerLRLCBlock(nn.Module):
-    def __init__(self, in_shape, rank, in_channels, out_channels, local_dim=None, lcw=False, low_dim=None, dropout=0):
+    def __init__(self, in_shape, rank, in_channels, out_channels, local_dim=None, lcw=False, low_dim=None, dropout=0, device="cpu"):
         super(TaenzerLRLCBlock, self).__init__()
         self.lrlc1 = lrlc_layer.LowRankLocallyConnected(rank, in_shape, in_channels, out_channels, 3, stride=1, padding=2, local_dim=local_dim)
         self.lcw = lcw
         if lcw:
-            self.combining_weights1 = lrlc_layer.LocalizationCombiningWeights(rank, in_shape, self.lrlc1.L, in_channels, low_dim, local_dim=local_dim)
+            self.combining_weights1 = lrlc_layer.LocalizationCombiningWeights(rank, in_shape, self.lrlc1.L, in_channels, low_dim, local_dim=local_dim, device=device)
         else:
             self.combining_weights1 = lrlc_layer.OuterCombiningWeights(rank, self.lrlc1.L, local_dim=local_dim)
         self.bn1 = nn.BatchNorm2d(out_channels)
 
         self.lrlc2 = lrlc_layer.LowRankLocallyConnected(rank, self.lrlc1.L, out_channels, out_channels, 3, stride=1, padding=2, local_dim=local_dim)
         if lcw:
-            self.combining_weights2 = lrlc_layer.LocalizationCombiningWeights(rank, self.lrlc1.L, self.lrlc2.L, in_channels, low_dim, local_dim=local_dim)
+            self.combining_weights2 = lrlc_layer.LocalizationCombiningWeights(rank, self.lrlc1.L, self.lrlc2.L, in_channels, low_dim, local_dim=local_dim, device=device)
         else:
-            self.combining_weights2 = lrlc_layer.OuterCombiningWeights(rank, self.lrlc1.L, local_dim=local_dim)
+            self.combining_weights2 = lrlc_layer.OuterCombiningWeights(rank, self.lrlc2.L, local_dim=local_dim)
         self.bn2 = nn.BatchNorm2d(out_channels)
 
         if dropout > 0:
@@ -150,7 +150,7 @@ class TaenzerLRLCBlock(nn.Module):
 
 
 class LRLCTaenzer(nn.Module):
-    def __init__(self, input_shape, class_enums, parameters):
+    def __init__(self, input_shape, class_enums, parameters, device="cpu"):
         super(LRLCTaenzer, self).__init__()
         h, w = input_shape
 
@@ -172,7 +172,7 @@ class LRLCTaenzer(nn.Module):
 
             h += 4
             w += 4
-            
+
             convs.append (nn.MaxPool2d(3,3))
 
             if parameters.dropout > 0:
@@ -183,7 +183,7 @@ class LRLCTaenzer(nn.Module):
         self.convs = nn.Sequential(*convs)
 
         # Add LRLC layer
-        self.lrlc = TaenzerLRLCBlock((h, w), parameters.rank, self.channels[-1], parameters.lrlc_channels, local_dim=parameters.local_dim, lcw=parameters.lcw, low_dim=parameters.low_dim, dropout=parameters.dropout)
+        self.lrlc = TaenzerLRLCBlock((h, w), parameters.rank, self.channels[-1], parameters.lrlc_channels, local_dim=parameters.local_dim, lcw=parameters.lcw, low_dim=parameters.low_dim, dropout=parameters.dropout, device=device)
         final_num_channels = self.channels[-1]
         
         #print('CNN last layer h:', h, 'w', w, 'final channels:', final_num_channels)
