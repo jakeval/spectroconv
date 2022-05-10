@@ -562,15 +562,23 @@ class EvalExperiment(WBExperiment):
 
     def add_visualization(self, df, model):
         # for x in range()
-        if isinstance(model, lrlc_model.LrlcClf):
+        if isinstance(model, lrlc_model.LRLCTaenzer):
             x = np.stack(df['spectrogram'].to_numpy())
             N, H, W = x.shape
             x = x.reshape(N, 1, H, W)
-            weights = model.get_local_weights(x)
-            for name, w in weights:
+            #weights = model.get_local_weights(x) # this is too big for large models
+            weights = model.get_combining_weights(x, keepdim=True)
+            for name, cw in weights: # w: N x Lh? x Lw? x R
+                N, Lh, Lw, R = cw.shape
+                w = cw.view(N, Lh, Lw, 1, 1, R)
                 s_freq, s_time = self._get_similarity(list(w), N)
                 df[f'viz_freq-{name}'] = [wandb.Image(p) for p in s_freq]
                 df[f'viz_time-{name}'] = [wandb.Image(p) for p in s_time]
+            #for name, layers in model.get_local_layers():
+            #    lrlc, cw = layers
+            #    mask, out = viz.combining_weights_activation_map(x, model, lrlc, cw)
+            #    df[f'viz_cw-mask-{name}'] = [wandb.Image(self.plot_viz(p)) for p in mask]
+            #    df[f'viz_cw-overlay-{name}'] = [wandb.Image(self.plot_viz(p)) for p in mask * x.reshape(N, H, W)]
         else:
             pass
         return df
@@ -581,13 +589,12 @@ class EvalExperiment(WBExperiment):
         s_freq = []
         s_time = []
         for w in W:
-            Lh, Lw, C2, C1, Kh, Kw = w.shape
-            K = Kh*Kw
-            wh = w.mean(axis=1).reshape(Lh, C2, C1, K)
+            # h, Lw, C2, C1, K = w.shape
+            wh = w.mean(axis=1)
             sf = viz.feature_distance(wh)
             s_freq.append(self.plot_viz(sf))
 
-            ww = w.mean(axis=0).reshape(Lw, C2, C1, K)
+            ww = w.mean(axis=0)
             st = viz.feature_distance(ww)
             s_time.append(self.plot_viz(st))
         return s_freq, s_time
@@ -604,28 +611,28 @@ class EvalExperiment(WBExperiment):
             for metric, value in split_metrics.items():
                 run.summary.update({f'{split}/{metric}': value})
 
-        columns = ['spectrogram_plot', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
-        viz_columns = ['spectrogram_plot', 'viz_freq-lrlc0', 'viz_time-lrlc0']
+        columns = ['spectrogram_plot', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']        
 
         for split, df in hard_df.items():
-            print(df.columns)
+            viz_columns = ['spectrogram_plot'] + list(filter(lambda col: col[:4] == 'viz_', df.columns))
             table = wandb.Table(dataframe=df[columns])
             table2 = wandb.Table(dataframe=df[viz_columns])
             run.log({
                 f'{split}/high-loss-examples': table
             })
             run.log({
-                f'{split}/filter-visualizations': table2
+                f'{split}/high-loss-filter-visualizations': table2
             })
 
         for split, df in easy_df.items():
+            viz_columns = ['spectrogram_plot'] + list(filter(lambda col: col[:4] == 'viz_', df.columns))
             table = wandb.Table(dataframe=df[columns])
             table2 = wandb.Table(dataframe=df[viz_columns])
             run.log({
                 f'{split}/low-loss-examples': table
             })
             run.log({
-                f'{split}/filter-visualizations': table2
+                f'{split}/low-loss-filter-visualizations': table2
             })
 
         norm_table = wandb.Table(data=model_stats['weight_norm'], columns=['layer', 'norm'])

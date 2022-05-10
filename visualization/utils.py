@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from layers import lrlc_layer
 import itertools
+from models import lrlc_model
 
 
 class LayerActivationMonitor:
@@ -70,8 +71,11 @@ def prepare_model(model):
     for key in state_dict:
         state_dict[key] = state_dict[key].detach().clone()
     model.train()
+    #if isinstance(model, lrlc_model.LRLCTaenzer):
+    #    b = model.lrlc
+    #    model.lrlc = lrlc_model.TaenzerLRLCBlock(b.in_shape, b.rank, b.in_channels, b.out_channels, b.local_dim, False, b.low_dim, b.dropout_, b.device).float()
     for module in model.modules():
-        if isinstance(module, torch.nn.modules.BatchNorm2d):
+        if isinstance(module, torch.nn.modules.BatchNorm2d) and module.affine:
             module.eval()
             nn.init.zeros_(module.running_mean)
             nn.init.ones_(module.running_var)
@@ -95,7 +99,7 @@ def prepare_model(model):
             nn.init.zeros_(module.bias)
         else:
             pass
-    
+
     return model, state_dict
 
 

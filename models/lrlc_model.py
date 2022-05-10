@@ -187,7 +187,7 @@ class LRLCTaenzer(nn.Module):
         h, w = input_shape
 
         self.norm_input = nn.BatchNorm2d(1, affine=False)
-        
+        self.local_dim = parameters.local_dim
         convs = []
         self.kernel_sizes = [parameters.kernel_size] * parameters.num_conv_layers
         self.channels = [1] + [parameters.num_channels * 2**i for i in range(0, parameters.num_conv_layers)]
@@ -282,13 +282,18 @@ class LRLCTaenzer(nn.Module):
                 weights.append(w)        
         return list(zip(names, weights))
 
+    def get_local_layers(self):
+        return [
+            ('lrlc0', (self.lrlc.lrlc1, self.lrlc.combining_weights1)),
+            ('lrlc1', (self.lrlc.lrlc2, self.lrlc.combining_weights2)),
+        ]
+
     def get_local_weights(self, x):
         cw1 = self.lrlc.combining_weights1
         cw2 = self.lrlc.combining_weights2
         monitor1 = utils.LayerActivationMonitor(cw1)
         monitor2 = utils.LayerActivationMonitor(cw2)
         x = torch.tensor(x).float()
-        print(x.shape)
         self.forward(x)
         cw1_out = monitor1.get_layer_output()
         cw2_out = monitor2.get_layer_output()
@@ -299,4 +304,25 @@ class LRLCTaenzer(nn.Module):
         weights.append(self.lrlc.lrlc2.get_weight(cw2_out, tile=True))
         names.append("lrlc0")
         names.append("lrlc1")
+        return list(zip(names, weights))
+
+    def get_combining_weights(self, x, keepdim=True):
+        cw1 = self.lrlc.combining_weights1
+        cw2 = self.lrlc.combining_weights2
+        monitor1 = utils.LayerActivationMonitor(cw1)
+        monitor2 = utils.LayerActivationMonitor(cw2)
+        x = torch.tensor(x).float()
+        self.forward(x)
+        cw1_out = monitor1.get_layer_output()
+        cw2_out = monitor2.get_layer_output()
+        if keepdim:
+            if self.local_dim == 0:
+                cw1_out = cw1_out[:,:,None,:] # N, Lh, 1, R
+                cw2_out = cw2_out[:,:,None,:] # N, Lh, 1, R
+            if self.local_dim == 1:
+                cw1_out = cw1_out[:,1,:,:] # N, Lh, 1, R
+                cw2_out = cw2_out[:,1,:,:] # N, Lh, 1, R
+        
+        weights = [cw1_out, cw2_out]
+        names = ['cw0', 'cw1']
         return list(zip(names, weights))
