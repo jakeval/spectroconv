@@ -172,3 +172,135 @@ class LcClf(nn.Module):
 
     def get_weights(self):
         return self.lc_layer.get_weight()
+
+
+
+
+class LCTaenzer(nn.Module):
+    def __init__(self, input_shape, class_enums, parameters):
+        super(LCTaenzer, self).__init__()
+        h, w = input_shape
+
+        self.norm_input = nn.BatchNorm2d(1, affine=False)
+        
+        convs = []
+        self.kernel_sizes = [parameters.kernel_size] * parameters.num_conv_layers
+        self.channels = [1] + [parameters.num_channels * 2**i for i in range(0, parameters.num_conv_layers)]
+
+        for i in range(len(self.kernel_sizes)):
+            # i -> i+1
+            convs.append(nn.Conv2d(self.channels[i], self.channels[i+1], self.kernel_sizes[i], padding=2, stride=1))
+            convs.append(nn.BatchNorm2d(self.channels[i+1]))
+            convs.append(nn.ReLU())
+
+            convs.append(nn.Conv2d(self.channels[i+1], self.channels[i+1], self.kernel_sizes[i], padding=2, stride=1))
+            convs.append(nn.BatchNorm2d(self.channels[i+1]))
+            convs.append(nn.ReLU())
+
+            h += 4
+            w += 4
+
+            convs.append (nn.MaxPool2d(3,3))
+
+            if parameters.dropout > 0:
+              convs.append(nn.Dropout2d(p=parameters.dropout))
+            h = h // 3
+            w = w // 3
+            #print('h:', h, 'w', w)          
+        self.convs = nn.Sequential(*convs)
+
+
+        # Add LC layer
+        lc = []
+        if parameters.local_dim is None:
+            lc.append(local_layer.LocallyConnected((h, w), self.channels[-1], parameters.lc_channels, 3, 1, 2))
+        else:
+            lc.append(local_layer.LocallyConnectedConv(parameters.local_dim, (h, w), self.channels[-1], parameters.lc_channels, 3, 1, 2))
+        self.lc1 = lc[-1]
+        lc.append(nn.BatchNorm2d(parameters.lc_channels))
+        lc.append(nn.ReLU())
+
+        if parameters.local_dim is None:
+            lc.append(local_layer.LocallyConnected((h+2, w+2), parameters.lc_channels, parameters.lc_channels, 3, 1, 2))
+        else:
+            lc.append(local_layer.LocallyConnectedConv(parameters.local_dim, (h+2, w+2), parameters.lc_channels, parameters.lc_channels, 3, 1, 2))
+        self.lc2 = lc[-1]
+        lc.append(nn.BatchNorm2d(parameters.lc_channels))
+        lc.append(nn.ReLU())
+
+        lc.append(nn.MaxPool2d(3,3))
+        if parameters.dropout > 0:
+            lc.append(nn.Dropout(p=parameters.dropout))
+        self.lc = nn.Sequential(*convs)
+
+        final_num_channels = self.channels[-1]
+
+        self.fc1 = nn.Linear(final_num_channels, parameters.linear_layer_size)
+        self.fc2 = nn.Linear(parameters.linear_layer_size, len(class_enums))
+        self.class_names = class_enums
+        
+    def forward(self, x):
+        x = self.convs(x)
+        x = self.lc(x)
+        x = torch.amax(x, dim=(2, 3)) # should now be 256 (final_num_channels) in length
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        return x
+
+    def predict_from_scores(self, scores):
+        return np.argmax(scores, axis=1)
+
+    def predict(self, X, device = None):
+        X = torch.tensor(X)
+        if device:
+            X = X.to(device)
+        detached_forward = self.forward(X).detach()
+        if device:
+            detached_forward = detached_forward.cpu()
+        scores = detached_forward.numpy()
+        return np.argmax(scores, axis=1)
+
+    def loss(self, S, y, **kwargs):
+        return F.cross_entropy(S, y, **kwargs)
+
+    def ordinal_to_class_enum(self, y):
+        y2 = [None] * len(y)
+        y = y.squeeze()
+        for i in range(len(y)):
+            y2[i] = self.class_names[y[i]]
+        return y2
+
+    def get_weights(self):
+        conv_count = 0
+        linear_count = 0
+        lc_count = 0
+        weights = []
+        names = []
+        for layer in self.modules():
+            w = None
+            name = None
+            if isinstance(layer, nn.Conv2d):
+                name = f"conv{conv_count}"
+                conv_count += 1
+                w = layer.weight
+            if isinstance(layer, nn.Linear):
+                name = f"linear{linear_count}"
+                linear_count += 1
+                w = layer.weight
+            if isinstance(layer, local_layer.LocallyConnected) or isinstance(layer, local_layer.LocallyConnectedConv):
+                name = f"lc{lc_count}"
+                lc_count += 1
+                w = layer.get_weight()
+            if w is not None:
+                names.append(name)
+                weights.append(w)        
+        return list(zip(names, weights))
+
+    def get_local_weights(self):        
+        weights = []
+        names = []
+        weights.append(self.lc1.get_weight(tile=True))
+        weights.append(self.lc2.get_weight(tile=True))
+        names.append("lc0")
+        names.append("lc1")

@@ -3,13 +3,14 @@ from torch import nn
 from torch.nn import functional as F
 import numpy as np
 from layers import lrlc_layer, max_norm_constraint
+from visualization import utils
 
 
 class LrlcClf(nn.Module):
     def __init__(self, input_shape, class_enums, parameters):
         super().__init__()
         h, w = input_shape
-        
+
         self.convs = []
         self.max_norm_layers = []
         self.pool = nn.MaxPool2d(2,2)
@@ -104,7 +105,38 @@ class LrlcClf(nn.Module):
         return y2
 
     def get_weights(self):
-        return self.lrlc_layer.get_weight(self.combining_weights())
+        conv_count = 0
+        linear_count = 0
+        lrlc_count = 0
+        weights = []
+        names = []
+        for layer in self.modules():
+            w = None
+            name = None
+            if isinstance(layer, nn.Conv2d):
+                name = f"conv{conv_count}"
+                conv_count += 1
+                w = layer.weight
+            if isinstance(layer, nn.Linear):
+                name = f"linear{linear_count}"
+                linear_count += 1
+                w = layer.weight
+            if isinstance(layer, lrlc_layer.LowRankLocallyConnected):
+                name = f"lrlc{lrlc_count}"
+                lrlc_count += 1
+                w = layer.weight_bases
+            if w is not None:
+                names.append(name)
+                weights.append(w)
+        return list(zip(names, weights))
+
+    def get_local_weights(self, x):
+        cw1 = self.combining_weights
+        monitor1 = utils.LayerActivationMonitor(cw1)
+        x = torch.tensor(x).float()
+        self.forward(x)
+        cw1_out = monitor1.get_layer_output()        
+        return [('lrlc0', self.lrlc_layer.get_weight(cw1_out, tile=True))]
 
 
 class TaenzerLRLCBlock(nn.Module):
@@ -223,3 +255,48 @@ class LRLCTaenzer(nn.Module):
         for i in range(len(y)):
             y2[i] = self.class_names[y[i]]
         return y2
+
+    def get_weights(self):
+        conv_count = 0
+        linear_count = 0
+        lrlc_count = 0
+        weights = []
+        names = []
+        for layer in self.modules():
+            w = None
+            name = None
+            if isinstance(layer, nn.Conv2d):
+                name = f"conv{conv_count}"
+                conv_count += 1
+                w = layer.weight
+            if isinstance(layer, nn.Linear):
+                name = f"linear{linear_count}"
+                linear_count += 1
+                w = layer.weight
+            if isinstance(layer, lrlc_layer.LowRankLocallyConnected):
+                name = f"lrlc{lrlc_count}"
+                lrlc_count += 1
+                w = layer.weight_bases
+            if w is not None:
+                names.append(name)
+                weights.append(w)        
+        return list(zip(names, weights))
+
+    def get_local_weights(self, x):
+        cw1 = self.lrlc.combining_weights1
+        cw2 = self.lrlc.combining_weights2
+        monitor1 = utils.LayerActivationMonitor(cw1)
+        monitor2 = utils.LayerActivationMonitor(cw2)
+        x = torch.tensor(x).float()
+        print(x.shape)
+        self.forward(x)
+        cw1_out = monitor1.get_layer_output()
+        cw2_out = monitor2.get_layer_output()
+        
+        weights = []
+        names = []
+        weights.append(self.lrlc.lrlc1.get_weight(cw1_out, tile=True))
+        weights.append(self.lrlc.lrlc2.get_weight(cw2_out, tile=True))
+        names.append("lrlc0")
+        names.append("lrlc1")
+        return list(zip(names, weights))

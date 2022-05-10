@@ -82,12 +82,15 @@ class LocallyConnected(nn.Module):
             out_f = out_f + self.bias.view(-1, out_f.shape[2], out_f.shape[3])
         return out_f
 
-    def get_weight(self):
+    def get_weight(self, tile=True):
         """
-        C2, Lh, Lw, K
-        K = C1 * Kh * Kw
+        Lh, Lw, C2, C1, K
+        K = Kh * Kw
         """
-        self.weight.view(self.out_c,self.L[0],self.L[1],-1).detach()
+        w = self.weight.view(self.out_c,self.L[0],self.L[1],-1).detach()
+        w = w.movedim(1, 0) # Lh, C2, L2, K
+        w = w.movedim(2, 1) # Lh, Lw, C2, K
+        return w.view(self.L[0], self.L[1], self.out_c, self.in_c,-1)
 
 
 class DepthwiseLocallyConnected(nn.Module):
@@ -251,11 +254,20 @@ class LocallyConnectedConv(nn.Module):
             out_f = out_f + bias
         return out_f
 
-    def get_weight(self):
+    def get_weight(self, tile=False):
         """
-        returns: C2, Ld, K
+        if tile: Lh, Lw, C2, C1, K
+        else Ld, C2, C1, K
         """
-        self.weight.detach()
+        w = self.weight.detach().swapaxes(0, 1) # Ld, C2, K
+        w = w.view(w.shape[0], self.out_c, self.in_c, -1) # Ld, C2, C1, K
+        if tile:
+            if self.d == 0:
+                w = torch.tile(w, (1, self.d[1], 1, 1, 1))
+            else:
+                w = torch.tile(w, (self.d[0], 1, 1, 1, 1))
+        return w
+
 
 
 def naive_lc(x, C2, w, b, bias=True):

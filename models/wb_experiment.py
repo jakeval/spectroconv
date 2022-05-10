@@ -15,6 +15,8 @@ import numpy as np
 
 from data_utils import nsynth_adapter as na
 from models import cnn_model, lc_model, lrlc_model
+from visualization import viz
+import matplotlib.pyplot as plt
 
 
 def _as_named_tuple(parameters):
@@ -182,13 +184,14 @@ class WBExperiment:
         return data
 
     def get_model(self, model_type, input_shape, class_enums, parameters):
-        #return cnn_model.OriginalCNN(input_shape, class_enums).float().to(self.device)
         if model_type == ModelType.CNN:
             return cnn_model.CnnClf(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LC:
-            return lc_model.LcClfNorm(input_shape, class_enums, parameters).float().to(self.device)
+            #return lc_model.LcClfNorm(input_shape, class_enums, parameters).float().to(self.device)
+            return lc_model.LCTaenzer(input_shape, class_enums, parameters)
         if model_type == ModelType.LRLC:
-            return lrlc_model.LRLCTaenzer(input_shape, class_enums, parameters, self.device).float().to(self.device)
+            #return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
+            return lrlc_model.LRLCTaenzer(input_shape, class_enums, parameters, device=self.device).float().to(self.device)
         if model_type == ModelType.Taenzer:
             return cnn_model.CnnTaenzer(input_shape, class_enums, parameters).float().to(self.device)
 
@@ -390,7 +393,13 @@ class TrainExperiment(WBExperiment):
 
                 if example_count % config['logging']['eval_log_interval'] == 0:
                     val_metrics = self.validate_model(model, val_loader)
+                    print(f"VAL: {val_metrics['accuracy']}")
                     self.log_progress('val', val_metrics, example_count, run)
+
+            if config['logging']['eval_every_epoch']:
+                val_metrics = self.validate_model(model, val_loader)
+                print(f"VAL: {val_metrics['accuracy']}")
+                self.log_progress('val', val_metrics, example_count, run)
 
     def log_progress(self, split, metrics, example_count, run):
         log_metrics = {}
@@ -440,29 +449,30 @@ class EvalExperiment(WBExperiment):
         hard_examples_df = {}
         easy_examples_df = {}
         model_stats = {'weight_norm': self.get_weight_norms(model)}
+        
+        #if getattr(model, 'get_local_weights', False):
+        #    model_stats['filter_weights'] = self.get_filter_weights(model)
+        
         for split, data in data_dict.items():
             data_loader = data.get_dataloader(64, shuffle=False)
             metrics[split] = self.validate_model(model, data_loader)
             hard_examples, easy_examples = self.get_hardest_k_examples(model, data, **config.get('examples', {}))
-            hard_examples_df[split] = self.get_examples_dataframe(hard_examples, split, data)
-            easy_examples_df[split] = self.get_examples_dataframe(easy_examples, split, data)
+            hard_df = self.get_examples_dataframe(hard_examples, split, data)
+            hard_df = self.add_visualization(hard_df, model)
+            hard_examples_df[split] = hard_df
+
+            easy_df = self.get_examples_dataframe(easy_examples, split, data)
+            easy_df = self.add_visualization(easy_df, model)
+            easy_examples_df[split] = easy_df
         
         return metrics, hard_examples_df, easy_examples_df, model_stats
 
     def get_weight_norms(self, model):
-        conv_count = 0
-        fc_count = 0
         labels = []
         norms = []
-        for layer in model.max_norm_layers:
-            if isinstance(layer, nn.Conv2d):
-                norms.append(layer.weight.norm(2).item())
-                labels.append(f"conv{conv_count}")
-                conv_count += 1
-            if isinstance(layer, nn.Linear):
-                norms.append(layer.weight.norm(2).item())
-                labels.append(f"linear{fc_count}")
-                fc_count += 1
+        for name, weight in model.get_weights():
+            norms.append(weight.norm(2).item())
+            labels.append(name)
         return [[label, val] for (label, val) in zip(labels, norms)]
 
     def get_hardest_k_examples(self, model, data, k=32):
@@ -542,13 +552,51 @@ class EvalExperiment(WBExperiment):
         df['family_true'] = label_str
         df['loss'] = examples['losses']
         plots = [data.plot_spectrogram(s) for s in df['spectrogram']]
-        df['spectrogram'] = [wandb.Image(p, caption=cap) for p, cap in zip(plots, label_str)]
+        df['spectrogram_plot'] = [wandb.Image(p, caption=cap) for p, cap in zip(plots, label_str)]
         df['audio'] = ([wandb.Audio(a, sample_rate=sr, caption=cap)
                         for a, sr, cap
                         in zip(df['audio'], df['sample_rate'], label_str)])
 
-        ordered_cols = ['spectrogram', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
+        ordered_cols = ['spectrogram_plot', 'spectrogram', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
         return df[ordered_cols]
+
+    def add_visualization(self, df, model):
+        # for x in range()
+        if isinstance(model, lrlc_model.LrlcClf):
+            x = np.stack(df['spectrogram'].to_numpy())
+            N, H, W = x.shape
+            x = x.reshape(N, 1, H, W)
+            weights = model.get_local_weights(x)
+            for name, w in weights:
+                s_freq, s_time = self._get_similarity(list(w), N)
+                df[f'viz_freq-{name}'] = [wandb.Image(p) for p in s_freq]
+                df[f'viz_time-{name}'] = [wandb.Image(p) for p in s_time]
+        else:
+            pass
+        return df
+
+    def _get_similarity(self, W, N):
+        if not isinstance(W, list):
+            W = [W] * N
+        s_freq = []
+        s_time = []
+        for w in W:
+            Lh, Lw, C2, C1, Kh, Kw = w.shape
+            K = Kh*Kw
+            wh = w.mean(axis=1).reshape(Lh, C2, C1, K)
+            sf = viz.feature_distance(wh)
+            s_freq.append(self.plot_viz(sf))
+
+            ww = w.mean(axis=0).reshape(Lw, C2, C1, K)
+            st = viz.feature_distance(ww)
+            s_time.append(self.plot_viz(st))
+        return s_freq, s_time
+
+    def plot_viz(self, v):
+        fig, ax = plt.subplots()
+        ax.imshow(-v)
+        plt.close(fig)
+        return fig
 
     def log_evaluation(self, metrics, hard_df, easy_df, model_stats, run):
         #run.summary.update(metrics)
@@ -556,16 +604,28 @@ class EvalExperiment(WBExperiment):
             for metric, value in split_metrics.items():
                 run.summary.update({f'{split}/{metric}': value})
 
+        columns = ['spectrogram_plot', 'audio', 'family_true', 'family_pred', 'loss', 'instrument', 'id']
+        viz_columns = ['spectrogram_plot', 'viz_freq-lrlc0', 'viz_time-lrlc0']
+
         for split, df in hard_df.items():
-            table = wandb.Table(dataframe=df)
+            print(df.columns)
+            table = wandb.Table(dataframe=df[columns])
+            table2 = wandb.Table(dataframe=df[viz_columns])
             run.log({
                 f'{split}/high-loss-examples': table
             })
+            run.log({
+                f'{split}/filter-visualizations': table2
+            })
 
         for split, df in easy_df.items():
-            table = wandb.Table(dataframe=df)
+            table = wandb.Table(dataframe=df[columns])
+            table2 = wandb.Table(dataframe=df[viz_columns])
             run.log({
                 f'{split}/low-loss-examples': table
+            })
+            run.log({
+                f'{split}/filter-visualizations': table2
             })
 
         norm_table = wandb.Table(data=model_stats['weight_norm'], columns=['layer', 'norm'])

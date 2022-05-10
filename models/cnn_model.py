@@ -39,10 +39,8 @@ class CnnClf(nn.Module):
         #self.aap = nn.AdaptiveAvgPool2d((1,1))
         #self.fc = nn.Linear(self.channels[-1], num_classes)
         #self.fc1 = nn.Linear(h*w*32, 64)
-        final_num_channels = parameters.num_channels * parameters.num_conv_layers
-        
-        print('CNN last layer h:', h, 'w', w, 'channels:', self.channels[-1], '=', h * w * final_num_channels)
-        
+        final_num_channels = self.channels[-1]
+                
         self.fc1 = nn.Linear(h * w * final_num_channels, parameters.linear_layer_size)
         self.fc2 = nn.Linear(parameters.linear_layer_size, len(class_enums))
         
@@ -152,7 +150,14 @@ class OriginalCNN(nn.Module):
         return y2
 
 
-
+class DefaultParams:
+    """Used for debugging."""
+    def __init__(self):
+        self.num_channels = 8
+        self.num_conv_layers = 2
+        self.kernel_size = 3
+        self.dropout = 0.25
+        self.linear_layer_size = 32
 
 
 class CnnTaenzer(nn.Module):
@@ -160,6 +165,9 @@ class CnnTaenzer(nn.Module):
         super().__init__()
         h, w = input_shape
         print('input shape', input_shape)
+
+        if parameters is None:
+            parameters = DefaultParams()
 
         self.norm_input = nn.BatchNorm2d(1, affine=False)
         
@@ -229,3 +237,19 @@ class CnnTaenzer(nn.Module):
         for i in range(len(y)):
             y2[i] = self.class_names[y[i]]
         return y2
+
+    def get_weights(self):
+        conv_count = 0
+        linear_count = 0
+        weights = []
+        names = []
+        for layer in self.modules():
+            if isinstance(layer, nn.Conv2d):
+                name = f"conv{conv_count}"
+                conv_count += 1
+            if isinstance(layer, nn.Linear):
+                name = f"linear{linear_count}"
+                linear_count += 1
+            names.append(name)
+            weights.append(layer.weight)
+        return list(zip(names, weights))
