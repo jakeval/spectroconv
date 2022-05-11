@@ -391,7 +391,7 @@ class TrainExperiment(WBExperiment):
                     print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {metrics["accuracy"]:.4f}')
                     self.log_progress('train', metrics, example_count, run)
 
-                if example_count % config['logging']['eval_log_interval'] == 0:
+                if batch_idx % config['logging']['eval_log_interval'] == 0:
                     val_metrics = self.validate_model(model, val_loader)
                     print(f"VAL: {val_metrics['accuracy']}")
                     self.log_progress('val', val_metrics, example_count, run)
