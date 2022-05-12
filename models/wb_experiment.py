@@ -274,7 +274,7 @@ class SweepExperiment(WBExperiment):
             input_shape = data['train'].sample_shape()
             class_enums = na.codes_to_enums(data['train'].code_lookup)
 
-            data['val']
+            # data['val']
             model = self.get_model(self.wb_config['model']['id'], input_shape, class_enums, run_parameters)
             
             optimizer = self.get_optimizer(run_parameters, model)
@@ -367,6 +367,9 @@ class TrainExperiment(WBExperiment):
         val_loader = val_data.get_dataloader(run_parameters.batch_size, shuffle=False)
         example_count = 0
         accumulate, finalize = self.metric_accumulator() # accumulate metrics as we train
+        train_log_interval = config['logging'].get('batch_log_interval', np.inf)
+        val_log_interval = config['logging'].get('eval_log_interval', np.inf)
+        val_per_epoch = config['logging'].get('eval_every_epoch', False)
         for epoch in tqdm(range(run_parameters.epochs)):
             model.train()
             for batch_idx, (X, y) in enumerate(tqdm(train_loader, leave=False)):
@@ -383,7 +386,7 @@ class TrainExperiment(WBExperiment):
 
                 example_count += len(X)
 
-                if batch_idx % config['logging']['batch_log_interval'] == 0:
+                if batch_idx % train_log_interval == 0:
                     # print batch loss and accuracy
                     metrics = finalize()
                     accumulate, finalize = self.metric_accumulator() # reset the accumulator
@@ -391,12 +394,12 @@ class TrainExperiment(WBExperiment):
                     print(f'Batch {batch_idx}: Loss: {loss.item():.4f}, Accuracy: {metrics["accuracy"]:.4f}')
                     self.log_progress('train', metrics, example_count, run)
 
-                if batch_idx % config['logging']['eval_log_interval'] == 0:
+                if batch_idx % val_log_interval == 0:
                     val_metrics = self.validate_model(model, val_loader)
                     print(f"VAL: {val_metrics['accuracy']}")
                     self.log_progress('val', val_metrics, example_count, run)
 
-            if config['logging']['eval_every_epoch']:
+            if val_per_epoch:
                 val_metrics = self.validate_model(model, val_loader)
                 print(f"VAL: {val_metrics['accuracy']}")
                 self.log_progress('val', val_metrics, example_count, run)
