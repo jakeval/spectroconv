@@ -267,8 +267,22 @@ class SweepExperiment(WBExperiment):
       sweep_id = wandb.sweep(sweep_config, entity=sweep_config['entity'], project=sweep_config['project'])
         
       # start running on our side, update results to wandb along the way
-      wandb.agent(sweep_id, self.train_with_parameters, count=iterations)
+      i = 0
+      err_count = 0
+      while i < iterations:
+          try:
+              print("start iteration ", i)
+              wandb.agent(sweep_id, self.train_with_parameters, count=1)
+              i += 1
+          except Exception as e:
+              print("caught error ", e)
+              err_count += 1
+          if err_count > 10:
+              return
 
+    def run_initialized_sweep(self, iterations, sweep_id, save_all = False):
+      self.save_all = save_all
+      wandb.agent(sweep_id, self.train_with_parameters, count=iterations)
 
     def train_with_parameters(self):
         # Initialize a new wandb run
