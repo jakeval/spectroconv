@@ -188,10 +188,8 @@ class WBExperiment:
         if model_type == ModelType.CNN:
             return cnn_model.CnnClf(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LC:
-            #return lc_model.LcClfNorm(input_shape, class_enums, parameters).float().to(self.device)
-            return lc_model.LCTaenzer(input_shape, class_enums, parameters)
+            return lc_model.LCTaenzer(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LRLC:
-            #return lrlc_model.LrlcClf(input_shape, class_enums, parameters).float().to(self.device)
             return lrlc_model.LRLCTaenzer(input_shape, class_enums, parameters, device=self.device).float().to(self.device)
         if model_type == ModelType.Taenzer:
             return cnn_model.CnnTaenzer(input_shape, class_enums, parameters).float().to(self.device)
