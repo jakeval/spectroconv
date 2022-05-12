@@ -184,6 +184,7 @@ class WBExperiment:
         return data
 
     def get_model(self, model_type, input_shape, class_enums, parameters):
+        print(model_type)
         if model_type == ModelType.CNN:
             return cnn_model.CnnClf(input_shape, class_enums, parameters).float().to(self.device)
         if model_type == ModelType.LC:
@@ -238,6 +239,13 @@ class WBExperiment:
         wandb.save(class_names_file)
         run.log_artifact(model_artifact)
         return model_name
+
+    def checkpoint_model(self, model, model_config, checkpoint_config, run_parameters_dict, run):
+        final_config = {
+            'id': model_config['id'],
+            'name': checkpoint_config['name_out']
+        }
+        return self.save_model(model, final_config, run_parameters_dict, run)
 
     def get_optimizer(self, parameters, model):
       # return torch.optim.SGD(model.parameters(), lr=parameters.learning_rate, momentum=0.9)
@@ -350,9 +358,13 @@ class TrainExperiment(WBExperiment):
             data = self.get_data(config.data, run)
             run_parameters = _as_named_tuple(config.parameters)
             
-            # need wb_config_['config']['model']['id'] otherwise wandb turns 
-            # ModelType into a string and isn't comparable to an enum
-            model = self.get_model(wb_config_['config']['model']['id'], data['train'].sample_shape(), na.codes_to_enums(data['train'].code_lookup), run_parameters)
+            if config.get('checkpoint', False) and config.checkpoint.get('load', False):
+                checkpoint = config.checkpoint
+                sample_shape = list(data.values())[0].sample_shape()
+                model = self.load_model(checkpoint['name_in'], run, sample_shape, model_version=checkpoint.get('model_version', 'latest'))
+                data = self.update_data(data, model.class_names)
+            else:
+                model = self.get_model(wb_config_['config']['model']['id'], data['train'].sample_shape(), na.codes_to_enums(data['train'].code_lookup), run_parameters)
 
             optimizer = self.get_optimizer(run_parameters, model)
 
@@ -398,6 +410,9 @@ class TrainExperiment(WBExperiment):
                     val_metrics = self.validate_model(model, val_loader)
                     print(f"VAL: {val_metrics['accuracy']}")
                     self.log_progress('val', val_metrics, example_count, run)
+
+            if config.get('checkpoint', False):
+                self.checkpoint_model(model, config.model, config.checkpoint, run_parameters._asdict(), run)
 
             if val_per_epoch:
                 val_metrics = self.validate_model(model, val_loader)
